@@ -1,0 +1,846 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kleinanzeigen Control Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --surface-alt: #242424;
+      --border: #303030;
+      --text: #ececec;
+      --muted: #a0a0a0;
+      --accent: #f97316;
+      --accent-soft: rgba(249, 115, 22, 0.2);
+      --good: #34d399;
+      --bad: #fb7185;
+      --warn: #fbbf24;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: radial-gradient(1300px circle at 20% -10%, #1f1f1f 0%, var(--bg) 55%);
+      color: var(--text);
+      font-family: "IBM Plex Mono", monospace;
+      min-height: 100vh;
+      line-height: 1.4;
+    }
+
+    .layout {
+      max-width: 1350px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      text-decoration: none;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-weight: 700;
+    }
+
+    .nav {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .nav a {
+      color: var(--text);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+
+    .nav a.active,
+    .nav a:hover {
+      border-color: var(--accent);
+    }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .card,
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 12px;
+    }
+
+    .card-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .card-value {
+      margin-top: 8px;
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .panel {
+      margin-bottom: 10px;
+    }
+
+    .panel h2 {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 780px;
+      background: #131313;
+    }
+
+    th,
+    td {
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+      font-size: 12px;
+    }
+
+    th {
+      color: var(--muted);
+      background: #101010;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      font-size: 11px;
+    }
+
+    a.link {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a.link:hover { text-decoration: underline; }
+
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    input,
+    select,
+    button {
+      width: 100%;
+      background: var(--surface-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 8px;
+      font-family: inherit;
+      font-size: 12px;
+    }
+
+    input[type="checkbox"] {
+      width: auto;
+      accent-color: var(--accent);
+    }
+
+    .btn {
+      cursor: pointer;
+      width: auto;
+      min-width: 80px;
+    }
+
+    .btn:hover { border-color: var(--accent); }
+
+    .btn-accent {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+    }
+
+    .inline-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+    }
+
+    .status-running { background: var(--warn); }
+    .status-success { background: var(--good); }
+    .status-error { background: var(--bad); }
+    .status-idle { background: var(--muted); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+    }
+
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+
+    .hidden { display: none; }
+
+    .pager {
+      margin-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .msg {
+      margin-top: 8px;
+      border: 1px solid var(--border);
+      padding: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 1100px) {
+      .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .two-col { grid-template-columns: 1fr; }
+      .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .settings-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 680px) {
+      .card-grid,
+      .filters,
+      .settings-grid,
+      .form-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <header class="topbar">
+      <a class="brand" href="/">kleinanzeigen control panel</a>
+      <nav class="nav">
+        <a id="navDashboard" href="/">Dashboard</a>
+        <a id="navListings" href="/listings">Listings</a>
+        <a id="navQueries" href="/queries">Queries</a>
+        <a id="navSettings" href="/settings">Settings</a>
+      </nav>
+    </header>
+
+    <section id="dashboardView" class="hidden">
+      <div class="card-grid">
+        <article class="card"><div class="card-label">Total Listings</div><div class="card-value" id="totalListings">-</div></article>
+        <article class="card"><div class="card-label">Active Listings</div><div class="card-value" id="activeListings">-</div></article>
+        <article class="card"><div class="card-label">New Last 24h</div><div class="card-value" id="newLast24h">-</div></article>
+        <article class="card"><div class="card-label">Search Queries</div><div class="card-value" id="totalQueries">-</div></article>
+      </div>
+
+      <section class="panel">
+        <h2>Scraper Status</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th><th>Active</th><th>Last Run</th><th>Next Run</th><th>Last Status</th><th>Running</th>
+              </tr>
+            </thead>
+            <tbody id="scraperStatusBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="two-col">
+        <section class="panel"><h2>New Listings, 14 Days</h2><canvas id="dailyChart" height="120"></canvas></section>
+        <section class="panel"><h2>Price Distribution</h2><canvas id="priceChart" height="120"></canvas></section>
+      </div>
+
+      <section class="panel">
+        <h2>Latest 20 Listings</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>First Seen</th><th>Link</th></tr></thead>
+            <tbody id="latestBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="listingsView" class="hidden">
+      <section class="panel">
+        <h2>Listings</h2>
+        <div class="filters">
+          <div><label for="listingsQueryFilter">Search Query</label><select id="listingsQueryFilter"><option value="">All</option></select></div>
+          <div><label for="listingsPriceFilter">Price Filter</label><select id="listingsPriceFilter"><option value="all">All</option><option value="priced">Only with price</option><option value="unpriced">Only without price</option></select></div>
+          <div><label for="listingsSortFilter">Sort</label><select id="listingsSortFilter"><option value="newest">Date: Newest</option><option value="oldest">Date: Oldest</option><option value="price_asc">Price: Low to High</option><option value="price_desc">Price: High to Low</option></select></div>
+          <div><label for="listingsOnlyNew">Only New 24h</label><input type="checkbox" id="listingsOnlyNew"></div>
+          <div><label for="listingsPageSize">Page Size</label><input id="listingsPageSize" value="50" readonly></div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>First Seen</th><th>Status</th></tr></thead>
+            <tbody id="listingsBody"></tbody>
+          </table>
+        </div>
+
+        <div class="pager">
+          <button class="btn" id="listingsPrev">Previous</button>
+          <div id="listingsPageInfo">Page 1 of 1</div>
+          <button class="btn" id="listingsNext">Next</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="queriesView" class="hidden">
+      <section class="panel">
+        <h2>Add Search Query</h2>
+        <div class="form-grid">
+          <input id="addQueryName" placeholder="Query name">
+          <input id="addQueryUrl" placeholder="https://www.kleinanzeigen.de/s-...">
+          <button class="btn btn-accent" id="addQueryBtn">Add</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Manage Queries</h2>
+        <div class="inline-row" style="margin-bottom:10px;">
+          <button class="btn" id="runAllBtn">Run All Active</button>
+          <span id="queriesMsg" class="badge"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th><th>URL</th><th>Active</th><th>Last Run</th><th>Next Run</th><th>Last Status</th><th>Listings</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="queriesBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Latest Scrape Logs</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Query</th><th>Started</th><th>Finished</th><th>Status</th><th>New</th><th>Updated</th><th>Deactivated</th><th>Error</th></tr></thead>
+            <tbody id="logsBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="settingsView" class="hidden">
+      <section class="panel">
+        <h2>Scheduler Settings</h2>
+        <div class="settings-grid">
+          <div><label for="intervalMinutes">Interval Minutes (min 30)</label><input type="number" min="30" id="intervalMinutes"></div>
+          <div><label for="minDelaySeconds">Min Delay Seconds</label><input type="number" step="0.1" id="minDelaySeconds"></div>
+          <div><label for="maxDelaySeconds">Max Delay Seconds</label><input type="number" step="0.1" id="maxDelaySeconds"></div>
+          <div><label for="maxPages">Max Pages</label><input type="number" min="1" id="maxPages"></div>
+          <div><label for="headlessMode">Headless</label><select id="headlessMode"><option value="true">true</option><option value="false">false</option></select></div>
+        </div>
+        <button class="btn btn-accent" id="saveSettingsBtn">Save</button>
+        <div id="settingsMsg" class="msg hidden"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Data Management</h2>
+        <div class="inline-row">
+          <button class="btn" id="cleanupInactiveBtn">Delete Inactive Older 30 Days</button>
+          <button class="btn" id="exportCsvBtn">Export Active CSV</button>
+          <div class="badge" id="dbStatsBadge">DB size: - MB | Records: -</div>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      listingsPage: 1,
+      listingsTotalPages: 1,
+      activePollers: new Map(),
+    };
+
+    let dailyChart;
+    let priceChart;
+
+    function formatDate(value) {
+      if (!value) return "-";
+      const d = new Date(value.replace(" ", "T") + "Z");
+      if (Number.isNaN(d.getTime())) return value;
+      return d.toLocaleString("de-DE", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
+    }
+
+    function formatPrice(value) {
+      if (value === null || value === undefined) return "N/A";
+      return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(value);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+
+    function setRouteView() {
+      const path = window.location.pathname;
+      const route = path === "/listings" ? "listings" : path === "/queries" ? "queries" : path === "/settings" ? "settings" : "dashboard";
+
+      document.getElementById("dashboardView").classList.toggle("hidden", route !== "dashboard");
+      document.getElementById("listingsView").classList.toggle("hidden", route !== "listings");
+      document.getElementById("queriesView").classList.toggle("hidden", route !== "queries");
+      document.getElementById("settingsView").classList.toggle("hidden", route !== "settings");
+
+      document.getElementById("navDashboard").classList.toggle("active", route === "dashboard");
+      document.getElementById("navListings").classList.toggle("active", route === "listings");
+      document.getElementById("navQueries").classList.toggle("active", route === "queries");
+      document.getElementById("navSettings").classList.toggle("active", route === "settings");
+
+      return route;
+    }
+
+    async function apiJson(url, options = {}) {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      let body = {};
+      try { body = text ? JSON.parse(text) : {}; } catch (_) {}
+      if (!response.ok) {
+        const message = body.error || response.statusText || "Request failed";
+        throw new Error(message);
+      }
+      return body;
+    }
+
+    function statusBadge(status) {
+      if (!status) return '<span class="status-dot status-idle"></span>idle';
+      if (status === "running") return '<span class="status-dot status-running"></span>running';
+      if (status === "success") return '<span class="status-dot status-success"></span>success';
+      if (status === "error") return '<span class="status-dot status-error"></span>error';
+      return '<span class="status-dot status-idle"></span>' + escapeHtml(status);
+    }
+
+    async function loadDashboard() {
+      const [stats, charts] = await Promise.all([apiJson("/api/stats"), apiJson("/api/charts")]);
+
+      document.getElementById("totalListings").textContent = stats.total_listings;
+      document.getElementById("activeListings").textContent = stats.active_listings;
+      document.getElementById("newLast24h").textContent = stats.new_last_24h;
+      document.getElementById("totalQueries").textContent = stats.total_queries;
+
+      const latestBody = document.getElementById("latestBody");
+      latestBody.innerHTML = "";
+      for (const row of stats.latest_listings || []) {
+        latestBody.insertAdjacentHTML("beforeend", `<tr>
+          <td><a class="link" href="${escapeHtml(row.url || "#")}" target="_blank" rel="noreferrer noopener">${escapeHtml(row.title || "Untitled")}</a></td>
+          <td>${escapeHtml(formatPrice(row.price))}</td>
+          <td>${escapeHtml(row.location || "-")}</td>
+          <td>${escapeHtml(formatDate(row.first_seen_at))}</td>
+          <td><a class="link" href="${escapeHtml(row.url || "#")}" target="_blank" rel="noreferrer noopener">open</a></td>
+        </tr>`);
+      }
+
+      const statusBody = document.getElementById("scraperStatusBody");
+      statusBody.innerHTML = "";
+      for (const item of stats.scraper_status.queries || []) {
+        statusBody.insertAdjacentHTML("beforeend", `<tr>
+          <td>${escapeHtml(item.name)}</td>
+          <td>${item.is_active ? '<span class="good">on</span>' : '<span class="bad">off</span>'}</td>
+          <td>${escapeHtml(formatDate(item.last_run_at))}</td>
+          <td>${escapeHtml(formatDate(item.next_run_at))}</td>
+          <td>${statusBadge(item.last_status)}</td>
+          <td>${item.is_running_now ? '<span class="good">Running...</span>' : '-'}</td>
+        </tr>`);
+      }
+
+      if (dailyChart) dailyChart.destroy();
+      if (priceChart) priceChart.destroy();
+
+      dailyChart = new Chart(document.getElementById("dailyChart"), {
+        type: "line",
+        data: { labels: charts.daily_new.labels, datasets: [{ data: charts.daily_new.data, borderColor: "#f97316", backgroundColor: "rgba(249,115,22,.2)", fill: true, tension: .3 }] },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: "#a0a0a0", maxRotation: 45, minRotation: 45 }, grid: { color: "rgba(255,255,255,.05)" } },
+            y: { ticks: { color: "#a0a0a0", precision: 0 }, grid: { color: "rgba(255,255,255,.06)" } },
+          }
+        }
+      });
+
+      priceChart = new Chart(document.getElementById("priceChart"), {
+        type: "bar",
+        data: { labels: charts.price_distribution.labels, datasets: [{ data: charts.price_distribution.data, backgroundColor: ["rgba(249,115,22,.8)","rgba(249,115,22,.7)","rgba(249,115,22,.6)","rgba(249,115,22,.5)","rgba(249,115,22,.4)"] }] },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: "#a0a0a0" }, grid: { display: false } },
+            y: { ticks: { color: "#a0a0a0", precision: 0 }, grid: { color: "rgba(255,255,255,.06)" } },
+          }
+        }
+      });
+    }
+
+    function listingsQuery() {
+      const params = new URLSearchParams();
+      params.set("page", String(state.listingsPage));
+      params.set("page_size", "50");
+      params.set("sort", document.getElementById("listingsSortFilter").value);
+      const queryId = document.getElementById("listingsQueryFilter").value;
+      if (queryId) params.set("query_id", queryId);
+      if (document.getElementById("listingsOnlyNew").checked) params.set("only_new", "1");
+      const priceFilter = document.getElementById("listingsPriceFilter").value;
+      if (priceFilter !== "all") params.set("only_priced", priceFilter);
+      return params.toString();
+    }
+
+    function refreshListingsPager() {
+      document.getElementById("listingsPageInfo").textContent = `Page ${state.listingsPage} of ${state.listingsTotalPages}`;
+      document.getElementById("listingsPrev").disabled = state.listingsPage <= 1;
+      document.getElementById("listingsNext").disabled = state.listingsPage >= state.listingsTotalPages;
+    }
+
+    async function loadListings() {
+      const data = await apiJson(`/api/listings?${listingsQuery()}`);
+      state.listingsPage = data.page;
+      state.listingsTotalPages = data.total_pages;
+
+      const querySelect = document.getElementById("listingsQueryFilter");
+      const current = querySelect.value;
+      querySelect.innerHTML = "<option value=''>All</option>";
+      for (const q of data.search_queries || []) {
+        querySelect.insertAdjacentHTML("beforeend", `<option value="${q.id}">${escapeHtml(q.name)}</option>`);
+      }
+      querySelect.value = current;
+
+      const body = document.getElementById("listingsBody");
+      body.innerHTML = "";
+      for (const row of data.listings || []) {
+        body.insertAdjacentHTML("beforeend", `<tr>
+          <td><a class="link" href="${escapeHtml(row.url || "#")}" target="_blank" rel="noreferrer noopener">${escapeHtml(row.title || "Untitled")}</a></td>
+          <td>${escapeHtml(formatPrice(row.price))}</td>
+          <td>${escapeHtml(row.location || "-")}</td>
+          <td>${escapeHtml(formatDate(row.first_seen_at))}</td>
+          <td>${row.is_active ? '<span class="good">active</span>' : '<span class="bad">inactive</span>'}</td>
+        </tr>`);
+      }
+
+      refreshListingsPager();
+    }
+
+    async function loadQueries() {
+      const data = await apiJson("/api/queries");
+      const body = document.getElementById("queriesBody");
+      body.innerHTML = "";
+
+      for (const q of data.queries || []) {
+        const runningText = q.is_running_now ? '<span class="good">Running...</span>' : "";
+        body.insertAdjacentHTML("beforeend", `<tr id="queryRow${q.id}">
+          <td data-role="name">${escapeHtml(q.name)}</td>
+          <td data-role="url"><a class="link" target="_blank" rel="noreferrer noopener" href="${escapeHtml(q.url)}">${escapeHtml(q.url)}</a></td>
+          <td>${q.is_active ? '<span class="good">on</span>' : '<span class="bad">off</span>'}</td>
+          <td>${escapeHtml(formatDate(q.last_run_at))}</td>
+          <td>${escapeHtml(formatDate(q.next_run_at))}</td>
+          <td>${statusBadge(q.last_status)} ${runningText}</td>
+          <td>${escapeHtml(String(q.listing_count || 0))}</td>
+          <td>
+            <div class="inline-row">
+              <button class="btn" onclick="runQueryNow(${q.id})">Run now</button>
+              <button class="btn" onclick="toggleQuery(${q.id})">Toggle</button>
+              <button class="btn" onclick="editQuery(${q.id})">Edit</button>
+              <button class="btn" onclick="deleteQuery(${q.id})">Delete</button>
+            </div>
+          </td>
+        </tr>`);
+      }
+    }
+
+    async function loadLogs() {
+      const data = await apiJson("/api/scraper/log");
+      const body = document.getElementById("logsBody");
+      body.innerHTML = "";
+      for (const row of data.items || []) {
+        body.insertAdjacentHTML("beforeend", `<tr>
+          <td>${row.id}</td>
+          <td>${escapeHtml(row.query_name || `#${row.query_id}`)}</td>
+          <td>${escapeHtml(formatDate(row.started_at))}</td>
+          <td>${escapeHtml(formatDate(row.finished_at))}</td>
+          <td>${statusBadge(row.status)}</td>
+          <td>${row.new_count || 0}</td>
+          <td>${row.updated_count || 0}</td>
+          <td>${row.deactivated_count || 0}</td>
+          <td>${escapeHtml(row.error_message || "-")}</td>
+        </tr>`);
+      }
+    }
+
+    async function runQueryNow(queryId) {
+      try {
+        const result = await apiJson(`/api/scraper/run/${queryId}`, { method: "POST" });
+        document.getElementById("queriesMsg").textContent = `Query ${queryId} started (log ${result.log_id})`;
+        pollLog(queryId, result.log_id);
+        await loadQueries();
+      } catch (error) {
+        document.getElementById("queriesMsg").textContent = error.message;
+      }
+    }
+
+    async function pollLog(queryId, logId) {
+      if (state.activePollers.has(queryId)) {
+        clearInterval(state.activePollers.get(queryId));
+      }
+
+      const intervalId = setInterval(async () => {
+        try {
+          const item = await apiJson(`/api/scraper/log/${logId}`);
+          if (item.status === "success" || item.status === "error") {
+            clearInterval(intervalId);
+            state.activePollers.delete(queryId);
+            document.getElementById("queriesMsg").textContent = `Query ${queryId}: ${item.status} (new ${item.new_count}, updated ${item.updated_count}, deactivated ${item.deactivated_count})`;
+            await Promise.all([loadQueries(), loadLogs()]);
+          }
+        } catch (_) {
+          clearInterval(intervalId);
+          state.activePollers.delete(queryId);
+        }
+      }, 2000);
+
+      state.activePollers.set(queryId, intervalId);
+    }
+
+    async function runAllQueries() {
+      try {
+        await apiJson("/api/scraper/run-all", { method: "POST" });
+        document.getElementById("queriesMsg").textContent = "Run-all started";
+        await loadQueries();
+      } catch (error) {
+        document.getElementById("queriesMsg").textContent = error.message;
+      }
+    }
+
+    async function addQuery() {
+      const name = document.getElementById("addQueryName").value.trim();
+      const url = document.getElementById("addQueryUrl").value.trim();
+      if (!name || !url) return;
+
+      try {
+        await apiJson("/api/queries", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, url }),
+        });
+        document.getElementById("addQueryName").value = "";
+        document.getElementById("addQueryUrl").value = "";
+        await loadQueries();
+      } catch (error) {
+        document.getElementById("queriesMsg").textContent = error.message;
+      }
+    }
+
+    async function toggleQuery(queryId) {
+      try {
+        await apiJson(`/api/queries/${queryId}/toggle`, { method: "POST" });
+        await loadQueries();
+      } catch (error) {
+        document.getElementById("queriesMsg").textContent = error.message;
+      }
+    }
+
+    function editQuery(queryId) {
+      const row = document.getElementById(`queryRow${queryId}`);
+      if (!row) return;
+
+      const currentName = row.querySelector('[data-role="name"]').textContent || "";
+      const currentUrlText = row.querySelector('[data-role="url"] a')?.getAttribute("href") || "";
+
+      row.querySelector('[data-role="name"]').innerHTML = `<input id="editName${queryId}" value="${escapeHtml(currentName)}">`;
+      row.querySelector('[data-role="url"]').innerHTML = `<input id="editUrl${queryId}" value="${escapeHtml(currentUrlText)}">`;
+
+      const actionsCell = row.querySelector("td:last-child");
+      actionsCell.innerHTML = `<div class="inline-row">
+        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="editActive${queryId}" checked>active</label>
+        <button class="btn btn-accent" onclick="saveQuery(${queryId})">Save</button>
+        <button class="btn" onclick="loadQueries()">Cancel</button>
+      </div>`;
+    }
+
+    async function saveQuery(queryId) {
+      try {
+        const name = document.getElementById(`editName${queryId}`).value.trim();
+        const url = document.getElementById(`editUrl${queryId}`).value.trim();
+        const is_active = document.getElementById(`editActive${queryId}`).checked;
+
+        await apiJson(`/api/queries/${queryId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, url, is_active }),
+        });
+        await loadQueries();
+      } catch (error) {
+        document.getElementById("queriesMsg").textContent = error.message;
+      }
+    }
+
+    async function deleteQuery(queryId) {
+      if (!window.confirm(`Delete query ${queryId} and all its listings?`)) return;
+      try {
+        await apiJson(`/api/queries/${queryId}`, { method: "DELETE" });
+        await loadQueries();
+      } catch (error) {
+        document.getElementById("queriesMsg").textContent = error.message;
+      }
+    }
+
+    async function loadSettings() {
+      const settings = await apiJson("/api/settings");
+      document.getElementById("intervalMinutes").value = settings.interval_minutes || "60";
+      document.getElementById("minDelaySeconds").value = settings.min_delay_seconds || "2";
+      document.getElementById("maxDelaySeconds").value = settings.max_delay_seconds || "6";
+      document.getElementById("maxPages").value = settings.max_pages || "5";
+      document.getElementById("headlessMode").value = settings.headless || "true";
+
+      const stats = await apiJson("/api/data/stats");
+      document.getElementById("dbStatsBadge").textContent = `DB size: ${stats.db_size_mb} MB | Records: ${stats.total_records}`;
+    }
+
+    async function saveSettings() {
+      const payload = {
+        interval_minutes: Number(document.getElementById("intervalMinutes").value),
+        min_delay_seconds: Number(document.getElementById("minDelaySeconds").value),
+        max_delay_seconds: Number(document.getElementById("maxDelaySeconds").value),
+        max_pages: Number(document.getElementById("maxPages").value),
+        headless: document.getElementById("headlessMode").value,
+      };
+
+      const msg = document.getElementById("settingsMsg");
+      msg.classList.remove("hidden");
+      try {
+        const result = await apiJson("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        msg.textContent = result.message || "Scheduler restarted";
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    }
+
+    async function cleanupInactive() {
+      try {
+        const result = await apiJson("/api/listings/inactive?days=30", { method: "DELETE" });
+        const msg = document.getElementById("settingsMsg");
+        msg.classList.remove("hidden");
+        msg.textContent = `Deleted ${result.deleted} inactive listings older than ${result.days} days`;
+        await loadSettings();
+      } catch (error) {
+        const msg = document.getElementById("settingsMsg");
+        msg.classList.remove("hidden");
+        msg.textContent = error.message;
+      }
+    }
+
+    function exportCsv() {
+      window.location.href = "/api/listings/export";
+    }
+
+    function bindEvents() {
+      document.getElementById("listingsQueryFilter").addEventListener("change", () => { state.listingsPage = 1; loadListings(); });
+      document.getElementById("listingsPriceFilter").addEventListener("change", () => { state.listingsPage = 1; loadListings(); });
+      document.getElementById("listingsSortFilter").addEventListener("change", () => { state.listingsPage = 1; loadListings(); });
+      document.getElementById("listingsOnlyNew").addEventListener("change", () => { state.listingsPage = 1; loadListings(); });
+      document.getElementById("listingsPrev").addEventListener("click", () => { if (state.listingsPage > 1) { state.listingsPage -= 1; loadListings(); } });
+      document.getElementById("listingsNext").addEventListener("click", () => { if (state.listingsPage < state.listingsTotalPages) { state.listingsPage += 1; loadListings(); } });
+
+      document.getElementById("addQueryBtn").addEventListener("click", addQuery);
+      document.getElementById("runAllBtn").addEventListener("click", runAllQueries);
+
+      document.getElementById("saveSettingsBtn").addEventListener("click", saveSettings);
+      document.getElementById("cleanupInactiveBtn").addEventListener("click", cleanupInactive);
+      document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+    }
+
+    async function init() {
+      bindEvents();
+      const route = setRouteView();
+
+      if (route === "dashboard") {
+        await loadDashboard();
+      } else if (route === "listings") {
+        await loadListings();
+      } else if (route === "queries") {
+        await Promise.all([loadQueries(), loadLogs()]);
+      } else if (route === "settings") {
+        await loadSettings();
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
