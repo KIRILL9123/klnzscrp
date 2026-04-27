@@ -58,25 +58,27 @@ def _build_next_page_url(current_url: str, next_page_number: int) -> str | None:
     if not segments:
         return None
 
-    replaced = False
-    updated_segments: list[str] = []
-    for segment in segments:
+    next_page_segment = f"seite:{next_page_number}"
+
+    # Replace existing seite:X segment if present.
+    for idx, segment in enumerate(segments):
         if re.fullmatch(r"seite:\d+", segment):
-            updated_segments.append(f"seite:{next_page_number}")
-            replaced = True
-        else:
-            updated_segments.append(segment)
+            segments[idx] = next_page_segment
+            next_path = "/" + "/".join(segments)
+            return urlunparse((parsed.scheme, parsed.netloc, next_path, "", "", ""))
 
-    if not replaced:
-        insert_idx = max(len(updated_segments) - 1, 1)
-        for idx, segment in enumerate(updated_segments):
-            if segment.startswith("k0"):
-                insert_idx = max(idx - 1, 1)
-                break
+    # Insert before the segment that precedes the k0* tail segment.
+    # For short paths like /s-iphone-15/k0 this still places seite before k0.
+    k0_idx = next((idx for idx, segment in enumerate(segments) if segment.startswith("k0")), None)
+    if k0_idx is not None:
+        insert_idx = max(k0_idx - 1, 1)
+    else:
+        # Fallback: insert before the last segment.
+        insert_idx = max(len(segments) - 1, 0)
 
-        updated_segments.insert(insert_idx, f"seite:{next_page_number}")
+    segments.insert(insert_idx, next_page_segment)
 
-    next_path = "/" + "/".join(updated_segments)
+    next_path = "/" + "/".join(segments)
     return urlunparse((parsed.scheme, parsed.netloc, next_path, "", "", ""))
 
 
@@ -250,3 +252,47 @@ async def scrape_listing_detail(url: str, headless: bool = True) -> dict[str, An
         await browser.close()
 
     return {"url": url, "description": description}
+
+
+def _run_next_page_url_unit_test() -> None:
+    test_cases = [
+        (
+            "https://www.kleinanzeigen.de/s-iphone-15/k0",
+            2,
+            "https://www.kleinanzeigen.de/s-iphone-15/seite:2/k0",
+        ),
+        (
+            "https://www.kleinanzeigen.de/s-konsolen/erfurt/playstation-5/k0c279l3741r30",
+            2,
+            "https://www.kleinanzeigen.de/s-konsolen/erfurt/seite:2/playstation-5/k0c279l3741r30",
+        ),
+        (
+            "https://www.kleinanzeigen.de/s-iphone-15/seite:3/k0",
+            4,
+            "https://www.kleinanzeigen.de/s-iphone-15/seite:4/k0",
+        ),
+        (
+            "https://www.kleinanzeigen.de/s-haushalt/moebel/berlin",
+            2,
+            "https://www.kleinanzeigen.de/s-haushalt/moebel/seite:2/berlin",
+        ),
+    ]
+
+    passed = 0
+    for idx, (source_url, page, expected_url) in enumerate(test_cases, start=1):
+        actual_url = _build_next_page_url(source_url, page)
+        ok = actual_url == expected_url
+        status = "PASS" if ok else "FAIL"
+        print(f"[{status}] case #{idx}")
+        print(f"  input:    {source_url}")
+        print(f"  expected: {expected_url}")
+        print(f"  actual:   {actual_url}")
+        if ok:
+            passed += 1
+
+    total = len(test_cases)
+    print(f"\nResult: {passed}/{total} passed")
+
+
+if __name__ == "__main__":
+    _run_next_page_url_unit_test()
