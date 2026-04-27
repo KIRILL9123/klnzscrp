@@ -73,7 +73,23 @@ def _parse_priced_filter(value: str | None) -> str:
         return "priced"
     if normalized in {"0", "false", "no", "off", "unpriced"}:
         return "unpriced"
+    if normalized in {"vb", "negotiable"}:
+        return "vb"
     return "all"
+
+
+def _parse_nullable_interval(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            return None
+
+    parsed = int(value)
+    if parsed < 30:
+        raise ValueError("interval_minutes must be >= 30")
+    return parsed
 
 
 def _bool_string(value: str | bool) -> str:
@@ -85,7 +101,7 @@ def _bool_string(value: str | bool) -> str:
 def _get_typed_settings() -> dict[str, Any]:
     settings = get_settings()
     return {
-        "interval_minutes": int(settings.get("interval_minutes", "60")),
+        "interval_minutes": int(settings.get("interval_minutes", "120")),
         "min_delay_seconds": float(settings.get("min_delay_seconds", "2")),
         "max_delay_seconds": float(settings.get("max_delay_seconds", "6")),
         "max_pages": int(settings.get("max_pages", "5")),
@@ -139,10 +155,13 @@ def _register_or_replace_job(query: dict[str, Any], interval_minutes: int) -> No
     if int(query.get("is_active") or 0) != 1:
         return
 
+    query_interval = query.get("interval_minutes")
+    minutes = int(query_interval) if query_interval is not None else int(interval_minutes)
+
     scheduler.add_job(
         func=_run_query_scrape_now,
         trigger="interval",
-        minutes=interval_minutes,
+        minutes=minutes,
         kwargs={"query_id": int(query["id"]), "scheduled": True},
         id=_job_id(int(query["id"])),
         replace_existing=True,
@@ -287,6 +306,7 @@ def _build_scraper_status() -> dict[str, Any]:
                 "is_active": int(query.get("is_active") or 0) == 1,
                 "last_run_at": query.get("last_run_at"),
                 "next_run_at": _query_next_run_at(query_id),
+                "interval_minutes": query.get("interval_minutes"),
                 "last_status": last_log["status"] if last_log else None,
                 "is_running_now": _is_query_running(query_id),
                 "listing_count": _query_listing_count(query_id),
@@ -346,7 +366,7 @@ def api_stats() -> Any:
 
         latest_rows = conn.execute(
             """
-            SELECT id, title, price, location, first_seen_at, url
+            SELECT id, title, price, price_negotiable, location, first_seen_at, url
             FROM listings
             ORDER BY first_seen_at DESC
             LIMIT 20
@@ -455,6 +475,8 @@ def api_listings() -> Any:
         conditions.append("l.price IS NOT NULL")
     elif priced_filter == "unpriced":
         conditions.append("l.price IS NULL")
+    elif priced_filter == "vb":
+        conditions.append("l.price_negotiable = 1")
 
     where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -484,6 +506,7 @@ def api_listings() -> Any:
                 l.id,
                 l.title,
                 l.price,
+                l.price_negotiable,
                 l.location,
                 l.first_seen_at,
                 l.url,
@@ -527,7 +550,8 @@ def api_queries_create() -> Any:
         return jsonify({"error": "name and url are required"}), 400
 
     try:
-        item = create_query_for_dashboard(name=name, url=url)
+        interval_minutes = _parse_nullable_interval(payload.get("interval_minutes"))
+        item = create_query_for_dashboard(name=name, url=url, interval_minutes=interval_minutes)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -550,7 +574,18 @@ def api_queries_update(query_id: int) -> Any:
         return jsonify({"error": "name and url are required"}), 400
 
     try:
-        updated = update_query_for_dashboard(query_id=query_id, name=name, url=url, is_active=is_active)
+        if "interval_minutes" in payload:
+            interval_minutes = _parse_nullable_interval(payload.get("interval_minutes"))
+        else:
+            interval_minutes = current.get("interval_minutes")
+
+        updated = update_query_for_dashboard(
+            query_id=query_id,
+            name=name,
+            url=url,
+            is_active=is_active,
+            interval_minutes=interval_minutes,
+        )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 

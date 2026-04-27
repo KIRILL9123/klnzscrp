@@ -62,15 +62,17 @@ def build_scheduler() -> BlockingScheduler:
 def register_jobs(
     scheduler: BlockingScheduler,
     queries: list[dict[str, Any]],
-    interval_minutes: int,
+    default_interval_minutes: int,
     scraper_cfg: dict[str, Any],
 ) -> None:
     """Register interval jobs for each configured search query."""
     for query in queries:
+        query_interval = query.get("interval_minutes")
+        minutes = int(query_interval) if query_interval is not None else int(default_interval_minutes)
         scheduler.add_job(
             func=run_single_search_job,
             trigger="interval",
-            minutes=interval_minutes,
+            minutes=minutes,
             kwargs={
                 "query_id": query["id"],
                 "query_name": query["name"],

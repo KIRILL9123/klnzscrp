@@ -82,7 +82,7 @@ def main() -> None:
     register_jobs(
         scheduler=scheduler,
         queries=queries,
-        interval_minutes=interval_minutes,
+        default_interval_minutes=interval_minutes,
         scraper_cfg=scraper_cfg,
     )
 

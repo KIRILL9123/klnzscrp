@@ -43,6 +43,7 @@ class SearchQuery(Base):
     name: Mapped[str] = mapped_column(String)
     url: Mapped[str] = mapped_column(Text, unique=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ListingQueryLink(Base):
@@ -205,7 +206,7 @@ def ensure_search_query(name: str, url: str) -> SearchQuery:
 
 
 SETTINGS_DEFAULTS = {
-    "interval_minutes": "60",
+    "interval_minutes": "120",
     "min_delay_seconds": "2",
     "max_delay_seconds": "6",
     "max_pages": "5",
@@ -227,6 +228,14 @@ def _ensure_search_query_is_active_column(conn: sqlite3.Connection) -> None:
     conn.execute(
         "ALTER TABLE search_queries ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
     )
+
+
+def _ensure_search_query_interval_column(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ALTER TABLE search_queries ADD COLUMN interval_minutes INTEGER")
+    except sqlite3.OperationalError:
+        # Column already exists in upgraded environments.
+        pass
 
 
 def _read_config_defaults() -> dict[str, str]:
@@ -256,6 +265,7 @@ def init_dashboard_db() -> None:
     with _get_sqlite_conn() as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         _ensure_search_query_is_active_column(conn)
+        _ensure_search_query_interval_column(conn)
 
         # If settings are empty, migrate default values from config.yaml once.
         row = conn.execute("SELECT COUNT(*) AS cnt FROM settings").fetchone()
@@ -297,7 +307,7 @@ def list_queries_for_dashboard() -> list[dict]:
     with _get_sqlite_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, url, last_run_at, is_active
+            SELECT id, name, url, last_run_at, is_active, interval_minutes
             FROM search_queries
             ORDER BY id ASC
             """
@@ -308,17 +318,17 @@ def list_queries_for_dashboard() -> list[dict]:
 def get_query_for_dashboard(query_id: int) -> dict | None:
     with _get_sqlite_conn() as conn:
         row = conn.execute(
-            "SELECT id, name, url, last_run_at, is_active FROM search_queries WHERE id = ?",
+            "SELECT id, name, url, last_run_at, is_active, interval_minutes FROM search_queries WHERE id = ?",
             (query_id,),
         ).fetchone()
     return dict(row) if row else None
 
 
-def create_query_for_dashboard(name: str, url: str) -> dict:
+def create_query_for_dashboard(name: str, url: str, interval_minutes: int | None = None) -> dict:
     with _get_sqlite_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO search_queries(name, url, last_run_at, is_active) VALUES (?, ?, NULL, 1)",
-            (name, url),
+            "INSERT INTO search_queries(name, url, last_run_at, is_active, interval_minutes) VALUES (?, ?, NULL, 1, ?)",
+            (name, url, interval_minutes),
         )
         conn.commit()
         query_id = int(cur.lastrowid)
@@ -328,15 +338,21 @@ def create_query_for_dashboard(name: str, url: str) -> dict:
     return item
 
 
-def update_query_for_dashboard(query_id: int, name: str, url: str, is_active: bool) -> dict | None:
+def update_query_for_dashboard(
+    query_id: int,
+    name: str,
+    url: str,
+    is_active: bool,
+    interval_minutes: int | None,
+) -> dict | None:
     with _get_sqlite_conn() as conn:
         conn.execute(
             """
             UPDATE search_queries
-            SET name = ?, url = ?, is_active = ?
+            SET name = ?, url = ?, is_active = ?, interval_minutes = ?
             WHERE id = ?
             """,
-            (name, url, 1 if is_active else 0, query_id),
+            (name, url, 1 if is_active else 0, interval_minutes, query_id),
         )
         conn.commit()
     return get_query_for_dashboard(query_id)

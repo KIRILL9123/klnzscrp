@@ -247,6 +247,8 @@
 
     .good { color: var(--good); }
     .bad { color: var(--bad); }
+    .vb { color: var(--warn); font-weight: 700; }
+    .na { color: var(--muted); }
 
     .hidden { display: none; }
 
@@ -337,7 +339,7 @@
         <h2>Listings</h2>
         <div class="filters">
           <div><label for="listingsQueryFilter">Search Query</label><select id="listingsQueryFilter"><option value="">All</option></select></div>
-          <div><label for="listingsPriceFilter">Price Filter</label><select id="listingsPriceFilter"><option value="all">All</option><option value="priced">Only with price</option><option value="unpriced">Only without price</option></select></div>
+          <div><label for="listingsPriceFilter">Price Filter</label><select id="listingsPriceFilter"><option value="all">All</option><option value="priced">Only with price</option><option value="unpriced">Only without price</option><option value="vb">VB</option></select></div>
           <div><label for="listingsSortFilter">Sort</label><select id="listingsSortFilter"><option value="newest">Date: Newest</option><option value="oldest">Date: Oldest</option><option value="price_asc">Price: Low to High</option><option value="price_desc">Price: High to Low</option></select></div>
           <div><label for="listingsOnlyNew">Only New 24h</label><input type="checkbox" id="listingsOnlyNew"></div>
           <div><label for="listingsPageSize">Page Size</label><input id="listingsPageSize" value="50" readonly></div>
@@ -364,6 +366,7 @@
         <div class="form-grid">
           <input id="addQueryName" placeholder="Query name">
           <input id="addQueryUrl" placeholder="https://www.kleinanzeigen.de/s-...">
+          <input id="addQueryInterval" type="number" min="30" placeholder="По умолчанию (120)">
           <button class="btn btn-accent" id="addQueryBtn">Add</button>
         </div>
       </section>
@@ -378,7 +381,7 @@
           <table>
             <thead>
               <tr>
-                <th>Name</th><th>URL</th><th>Active</th><th>Last Run</th><th>Next Run</th><th>Last Status</th><th>Listings</th><th>Actions</th>
+                <th>Name</th><th>URL</th><th>Интервал (мин)</th><th>Active</th><th>Last Run</th><th>Next Run</th><th>Last Status</th><th>Listings</th><th>Actions</th>
               </tr>
             </thead>
             <tbody id="queriesBody"></tbody>
@@ -439,9 +442,18 @@
       return d.toLocaleString("de-DE", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
     }
 
-    function formatPrice(value) {
-      if (value === null || value === undefined) return "N/A";
-      return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(value);
+    function formatPrice(value, negotiable) {
+      if (value !== null && value !== undefined) {
+        const amount = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 }).format(value);
+        return `${amount} €`;
+      }
+      if (negotiable) return '<span class="vb">VB</span>';
+      return '<span class="na">-</span>';
+    }
+
+    function displayQueryInterval(value) {
+      if (value === null || value === undefined || value === "") return "по умолчанию";
+      return `${value}`;
     }
 
     function escapeHtml(value) {
@@ -498,7 +510,7 @@
       for (const row of stats.latest_listings || []) {
         latestBody.insertAdjacentHTML("beforeend", `<tr>
           <td><a class="link" href="${escapeHtml(row.url || "#")}" target="_blank" rel="noreferrer noopener">${escapeHtml(row.title || "Untitled")}</a></td>
-          <td>${escapeHtml(formatPrice(row.price))}</td>
+          <td>${formatPrice(row.price, row.price_negotiable)}</td>
           <td>${escapeHtml(row.location || "-")}</td>
           <td>${escapeHtml(formatDate(row.first_seen_at))}</td>
           <td><a class="link" href="${escapeHtml(row.url || "#")}" target="_blank" rel="noreferrer noopener">open</a></td>
@@ -583,7 +595,7 @@
       for (const row of data.listings || []) {
         body.insertAdjacentHTML("beforeend", `<tr>
           <td><a class="link" href="${escapeHtml(row.url || "#")}" target="_blank" rel="noreferrer noopener">${escapeHtml(row.title || "Untitled")}</a></td>
-          <td>${escapeHtml(formatPrice(row.price))}</td>
+          <td>${formatPrice(row.price, row.price_negotiable)}</td>
           <td>${escapeHtml(row.location || "-")}</td>
           <td>${escapeHtml(formatDate(row.first_seen_at))}</td>
           <td>${row.is_active ? '<span class="good">active</span>' : '<span class="bad">inactive</span>'}</td>
@@ -603,7 +615,8 @@
         body.insertAdjacentHTML("beforeend", `<tr id="queryRow${q.id}">
           <td data-role="name">${escapeHtml(q.name)}</td>
           <td data-role="url"><a class="link" target="_blank" rel="noreferrer noopener" href="${escapeHtml(q.url)}">${escapeHtml(q.url)}</a></td>
-          <td>${q.is_active ? '<span class="good">on</span>' : '<span class="bad">off</span>'}</td>
+          <td data-role="interval" data-interval="${q.interval_minutes === null || q.interval_minutes === undefined ? "" : q.interval_minutes}">${escapeHtml(displayQueryInterval(q.interval_minutes))}</td>
+          <td data-role="active" data-active="${q.is_active ? "1" : "0"}">${q.is_active ? '<span class="good">on</span>' : '<span class="bad">off</span>'}</td>
           <td>${escapeHtml(formatDate(q.last_run_at))}</td>
           <td>${escapeHtml(formatDate(q.next_run_at))}</td>
           <td>${statusBadge(q.last_status)} ${runningText}</td>
@@ -686,16 +699,20 @@
     async function addQuery() {
       const name = document.getElementById("addQueryName").value.trim();
       const url = document.getElementById("addQueryUrl").value.trim();
+      const intervalRaw = document.getElementById("addQueryInterval").value.trim();
       if (!name || !url) return;
+
+      const payload = { name, url, interval_minutes: intervalRaw ? Number(intervalRaw) : null };
 
       try {
         await apiJson("/api/queries", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, url }),
+          body: JSON.stringify(payload),
         });
         document.getElementById("addQueryName").value = "";
         document.getElementById("addQueryUrl").value = "";
+        document.getElementById("addQueryInterval").value = "";
         await loadQueries();
       } catch (error) {
         document.getElementById("queriesMsg").textContent = error.message;
@@ -717,13 +734,16 @@
 
       const currentName = row.querySelector('[data-role="name"]').textContent || "";
       const currentUrlText = row.querySelector('[data-role="url"] a')?.getAttribute("href") || "";
+      const currentInterval = row.querySelector('[data-role="interval"]')?.dataset.interval || "";
+      const currentActive = row.querySelector('[data-role="active"]')?.dataset.active === "1";
 
       row.querySelector('[data-role="name"]').innerHTML = `<input id="editName${queryId}" value="${escapeHtml(currentName)}">`;
       row.querySelector('[data-role="url"]').innerHTML = `<input id="editUrl${queryId}" value="${escapeHtml(currentUrlText)}">`;
+      row.querySelector('[data-role="interval"]').innerHTML = `<input id="editInterval${queryId}" type="number" min="30" placeholder="По умолчанию (120)" value="${escapeHtml(currentInterval)}">`;
 
       const actionsCell = row.querySelector("td:last-child");
       actionsCell.innerHTML = `<div class="inline-row">
-        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="editActive${queryId}" checked>active</label>
+        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="editActive${queryId}" ${currentActive ? "checked" : ""}>active</label>
         <button class="btn btn-accent" onclick="saveQuery(${queryId})">Save</button>
         <button class="btn" onclick="loadQueries()">Cancel</button>
       </div>`;
@@ -734,11 +754,13 @@
         const name = document.getElementById(`editName${queryId}`).value.trim();
         const url = document.getElementById(`editUrl${queryId}`).value.trim();
         const is_active = document.getElementById(`editActive${queryId}`).checked;
+        const intervalRaw = document.getElementById(`editInterval${queryId}`).value.trim();
+        const interval_minutes = intervalRaw ? Number(intervalRaw) : null;
 
         await apiJson(`/api/queries/${queryId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, url, is_active }),
+          body: JSON.stringify({ name, url, is_active, interval_minutes }),
         });
         await loadQueries();
       } catch (error) {
@@ -758,7 +780,7 @@
 
     async function loadSettings() {
       const settings = await apiJson("/api/settings");
-      document.getElementById("intervalMinutes").value = settings.interval_minutes || "60";
+      document.getElementById("intervalMinutes").value = settings.interval_minutes || "120";
       document.getElementById("minDelaySeconds").value = settings.min_delay_seconds || "2";
       document.getElementById("maxDelaySeconds").value = settings.max_delay_seconds || "6";
       document.getElementById("maxPages").value = settings.max_pages || "5";

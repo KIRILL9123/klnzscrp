@@ -2,9 +2,9 @@ searches:
 - name: iPhone 15 Erfurt
   url: https://www.kleinanzeigen.de/s-iphone-15/k0
 scheduler:
-  interval_minutes: 60
+  interval_minutes: 120
 scraper:
   min_delay_seconds: 2.0
   max_delay_seconds: 6.0
-  max_pages: 5
+  max_pages: 20
   headless: true

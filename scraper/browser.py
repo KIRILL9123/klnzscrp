@@ -6,7 +6,7 @@ import random
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urlparse, urlunparse
 
 import yaml
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -54,10 +54,50 @@ def extract_listing_id(url: str) -> str | None:
 
 def _parse_price(price_text: str) -> tuple[int | None, bool]:
     """Parse numeric euro value and negotiable marker from raw text."""
-    negotiable = "vb" in price_text.lower()
-    digits = re.sub(r"[^\d]", "", price_text)
-    price = int(digits) if digits else None
-    return price, negotiable
+    text = (price_text or "").strip()
+    if not text:
+        return None, False
+
+    has_vb = bool(re.search(r"\bvb\b", text, flags=re.IGNORECASE))
+    match = re.search(r"(\d[\d\s\.,]*)", text)
+    if not match:
+        return None, has_vb
+
+    digits = re.sub(r"\D", "", match.group(1))
+    if not digits:
+        return None, has_vb
+
+    return int(digits), has_vb
+
+
+def _build_next_page_url(current_url: str, next_page_number: int) -> str | None:
+    """Build the next Kleinanzeigen search page URL using the seite:N pattern."""
+    parsed = urlparse(current_url)
+    path = parsed.path or ""
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        return None
+
+    replaced = False
+    updated_segments: list[str] = []
+    for segment in segments:
+        if re.fullmatch(r"seite:\d+", segment):
+            updated_segments.append(f"seite:{next_page_number}")
+            replaced = True
+        else:
+            updated_segments.append(segment)
+
+    if not replaced:
+        insert_idx = max(len(updated_segments) - 1, 1)
+        for idx, segment in enumerate(updated_segments):
+            if segment.startswith("k0"):
+                insert_idx = max(idx - 1, 1)
+                break
+
+        updated_segments.insert(insert_idx, f"seite:{next_page_number}")
+
+    next_path = "/" + "/".join(updated_segments)
+    return urlunparse((parsed.scheme, parsed.netloc, next_path, "", "", ""))
 
 
 async def _create_context(browser: Browser) -> BrowserContext:
@@ -179,22 +219,32 @@ async def scrape_search(
         current_url = url
 
         for page_number in range(1, max_pages + 1):
-            logger.info("Scraping page %s: %s", page_number, current_url)
+            logger.info("Scraping page %s of max %s: %s", page_number, max_pages, current_url)
             await page.goto(current_url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(1200)
 
+            if page.url.rstrip("/") != current_url.rstrip("/"):
+                logger.info(
+                    "Stopping pagination because page redirected from %s to %s",
+                    current_url,
+                    page.url,
+                )
+                break
+
             page_items = await _collect_listing_cards(page)
+            if not page_items:
+                logger.info("Stopping pagination because page has 0 listings: %s", current_url)
+                break
             listings.extend(page_items)
 
-            next_link = page.locator("a[rel='next'], a[aria-label*='Nächste']").first
-            if await next_link.count() == 0:
+            if page_number >= max_pages:
                 break
 
-            href = await next_link.get_attribute("href")
-            if not href:
+            next_url = _build_next_page_url(current_url=current_url, next_page_number=page_number + 1)
+            if not next_url:
                 break
 
-            current_url = urljoin("https://www.kleinanzeigen.de", href)
+            current_url = next_url
 
             # Delay between page transitions is required to reduce ban risk.
             await asyncio.sleep(random.uniform(min_delay_seconds, max_delay_seconds))
