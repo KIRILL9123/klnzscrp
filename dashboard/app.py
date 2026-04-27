@@ -200,6 +200,9 @@ def _run_query_scrape_with_log(query_id: int, log_id: int) -> None:
             scrape_search(
                 url=str(query["url"]),
                 max_pages=int(settings["max_pages"]),
+                min_delay_seconds=float(settings["min_delay_seconds"]),
+                max_delay_seconds=float(settings["max_delay_seconds"]),
+                headless=bool(settings["headless"]),
             )
         )
 

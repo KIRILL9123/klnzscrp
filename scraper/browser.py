@@ -6,9 +6,7 @@ import random
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
-
-import yaml
+from urllib.parse import urlparse, urlunparse, urljoin
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import Stealth
 
@@ -20,24 +18,6 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-
-_BASE_DIR = Path(__file__).resolve().parents[1]
-_CONFIG_PATH = _BASE_DIR / "config.yaml"
-
-
-def _load_scraper_config() -> dict[str, Any]:
-    """Load scraper configuration from the global project config."""
-    if not _CONFIG_PATH.exists():
-        raise FileNotFoundError(f"Config file not found: {_CONFIG_PATH}")
-
-    with _CONFIG_PATH.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-
-    scraper_cfg = cfg.get("scraper", {})
-    if not isinstance(scraper_cfg, dict):
-        raise ValueError("scraper config section is invalid")
-    return scraper_cfg
-
 
 def extract_listing_id(url: str) -> str | None:
     """Extract kleinanzeigen listing ID from URL path."""
@@ -101,17 +81,13 @@ def _build_next_page_url(current_url: str, next_page_number: int) -> str | None:
 
 
 async def _create_context(browser: Browser) -> BrowserContext:
-    """Create browser context with stealth and realistic headers."""
+    """Create browser context with realistic headers."""
     context = await browser.new_context(
         user_agent=USER_AGENT,
         viewport={"width": 1366, "height": 768},
         locale="de-DE",
         timezone_id="Europe/Berlin",
     )
-
-    # Apply stealth to every page in this context.
-    page = await context.new_page()
-    await _STEALTH.apply_stealth_async(page)
     return context
 
 
@@ -195,15 +171,13 @@ async def _collect_listing_cards(page: Page) -> list[dict[str, Any]]:
 async def scrape_search(
     url: str,
     max_pages: int,
+    min_delay_seconds: float = 2.0,
+    max_delay_seconds: float = 6.0,
+    headless: bool = True,
 ) -> list[dict[str, Any]]:
     """Scrape a kleinanzeigen search URL page-by-page sequentially."""
     if max_pages < 1:
         return []
-
-    scraper_cfg = _load_scraper_config()
-    min_delay_seconds = float(scraper_cfg.get("min_delay_seconds", 2))
-    max_delay_seconds = float(scraper_cfg.get("max_delay_seconds", 6))
-    headless = bool(scraper_cfg.get("headless", True))
 
     if min_delay_seconds < 0 or max_delay_seconds < min_delay_seconds:
         raise ValueError("Invalid delay range provided")
