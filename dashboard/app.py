@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -14,6 +15,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, Response, jsonify, render_template, request
 
+from notifier.telegram import TelegramNotifier
 from scraper.browser import scrape_search
 from storage.database import (
     DB_PATH,
@@ -47,6 +49,15 @@ scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(max_wor
 running_queries: set[int] = set()
 running_queries_lock = threading.Lock()
 run_all_lock = threading.Lock()
+logger = logging.getLogger(__name__)
+
+TELEGRAM_SETTINGS_DEFAULTS = {
+    "telegram_token": "",
+    "telegram_chat_id": "",
+    "telegram_enabled": "false",
+    "telegram_min_price": "",
+    "telegram_max_price": "",
+}
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -96,6 +107,78 @@ def _bool_string(value: str | bool) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return "true" if str(value).strip().lower() in {"1", "true", "yes", "on"} else "false"
+
+
+def _parse_optional_price_setting(value: Any) -> float | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if raw == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _normalize_optional_price(value: Any) -> str:
+    if value is None:
+        return ""
+
+    raw = str(value).strip()
+    if raw == "":
+        return ""
+
+    parsed = float(raw)
+    if parsed < 0:
+        raise ValueError("price filters must be >= 0")
+
+    return str(int(parsed)) if parsed.is_integer() else str(parsed)
+
+
+def _ensure_telegram_settings_defaults() -> None:
+    settings = get_settings()
+    missing = {key: value for key, value in TELEGRAM_SETTINGS_DEFAULTS.items() if key not in settings}
+    if missing:
+        update_settings(missing)
+
+
+def _get_telegram_runtime_settings() -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "token": str(settings.get("telegram_token", "")).strip(),
+        "chat_id": str(settings.get("telegram_chat_id", "")).strip(),
+        "enabled": _bool_string(settings.get("telegram_enabled", "false")) == "true",
+        "min_price": _parse_optional_price_setting(settings.get("telegram_min_price", "")),
+        "max_price": _parse_optional_price_setting(settings.get("telegram_max_price", "")),
+    }
+
+
+def _filter_listings_by_price(
+    listings: list[dict[str, Any]],
+    min_price: float | None,
+    max_price: float | None,
+) -> list[dict[str, Any]]:
+    if min_price is None and max_price is None:
+        return listings
+
+    filtered: list[dict[str, Any]] = []
+    for item in listings:
+        price = item.get("price")
+        if price is None:
+            continue
+        try:
+            price_value = float(price)
+        except (TypeError, ValueError):
+            continue
+
+        if min_price is not None and price_value < min_price:
+            continue
+        if max_price is not None and price_value > max_price:
+            continue
+        filtered.append(item)
+
+    return filtered
 
 
 def _get_typed_settings() -> dict[str, Any]:
@@ -208,12 +291,16 @@ def _run_query_scrape_with_log(query_id: int, log_id: int) -> None:
 
         created = 0
         updated = 0
+        new_listings: list[dict[str, Any]] = []
         scraped_ids: set[str] = set()
         for item in listings:
             scraped_ids.add(item["id"])
             result = upsert_listing(item, query_id=query_id)
             if result == "created":
                 created += 1
+                created_item = dict(item)
+                created_item.setdefault("first_seen_at", _fmt_datetime(datetime.utcnow()))
+                new_listings.append(created_item)
             else:
                 updated += 1
 
@@ -229,6 +316,38 @@ def _run_query_scrape_with_log(query_id: int, log_id: int) -> None:
             updated_count=updated,
             deactivated_count=deactivated,
         )
+
+        telegram = _get_telegram_runtime_settings()
+        query_telegram_enabled = int(query.get("telegram_enabled") or 0) == 1
+        if created > 0 and telegram["enabled"] and query_telegram_enabled:
+            try:
+                if not telegram["token"] or not telegram["chat_id"]:
+                    logger.warning("Telegram notifications are enabled but token/chat_id are missing")
+                else:
+                    filtered_new_listings = _filter_listings_by_price(
+                        new_listings,
+                        min_price=telegram["min_price"],
+                        max_price=telegram["max_price"],
+                    )
+                    if filtered_new_listings:
+                        notifier = TelegramNotifier(
+                            token=str(telegram["token"]),
+                            chat_id=str(telegram["chat_id"]),
+                        )
+                        sent_count = asyncio.run(
+                            notifier.send_batch(
+                                filtered_new_listings,
+                                query_name=str(query.get("name") or f"query_{query_id}"),
+                            )
+                        )
+                        logger.info(
+                            "Telegram notifications sent %s/%s for query_id=%s",
+                            sent_count,
+                            len(filtered_new_listings),
+                            query_id,
+                        )
+            except Exception as telegram_exc:
+                logger.error("Telegram notification flow failed: %s", telegram_exc)
     except Exception as exc:
         finish_scrape_log(log_id=log_id, status="error", error_message=str(exc))
     finally:
@@ -307,6 +426,7 @@ def _build_scraper_status() -> dict[str, Any]:
                 "name": query["name"],
                 "url": query["url"],
                 "is_active": int(query.get("is_active") or 0) == 1,
+                "telegram_enabled": int(query.get("telegram_enabled") or 0) == 1,
                 "last_run_at": query.get("last_run_at"),
                 "next_run_at": _query_next_run_at(query_id),
                 "interval_minutes": query.get("interval_minutes"),
@@ -324,6 +444,7 @@ def _build_scraper_status() -> dict[str, Any]:
 
 def _bootstrap() -> None:
     init_dashboard_db()
+    _ensure_telegram_settings_defaults()
     _sync_config_from_settings(_get_typed_settings())
 
     if not scheduler.running:
@@ -554,7 +675,13 @@ def api_queries_create() -> Any:
 
     try:
         interval_minutes = _parse_nullable_interval(payload.get("interval_minutes"))
-        item = create_query_for_dashboard(name=name, url=url, interval_minutes=interval_minutes)
+        telegram_enabled = _bool_string(payload.get("telegram_enabled", "true")) == "true"
+        item = create_query_for_dashboard(
+            name=name,
+            url=url,
+            interval_minutes=interval_minutes,
+            telegram_enabled=telegram_enabled,
+        )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -571,7 +698,11 @@ def api_queries_update(query_id: int) -> Any:
 
     name = str(payload.get("name", current["name"])).strip()
     url = str(payload.get("url", current["url"])).strip()
-    is_active = bool(payload.get("is_active", int(current.get("is_active") or 0) == 1))
+    is_active = _bool_string(payload.get("is_active", int(current.get("is_active") or 0) == 1)) == "true"
+    telegram_enabled = (
+        _bool_string(payload.get("telegram_enabled", int(current.get("telegram_enabled") or 0) == 1))
+        == "true"
+    )
 
     if not name or not url:
         return jsonify({"error": "name and url are required"}), 400
@@ -588,6 +719,7 @@ def api_queries_update(query_id: int) -> Any:
             url=url,
             is_active=is_active,
             interval_minutes=interval_minutes,
+            telegram_enabled=telegram_enabled,
         )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
@@ -718,6 +850,88 @@ def api_settings_put() -> Any:
     _reload_scheduler_jobs()
 
     return jsonify({"settings": merged, "message": "Scheduler restarted"})
+
+
+@app.get("/api/telegram/settings")
+def api_telegram_settings_get() -> Any:
+    settings = get_settings()
+    token = str(settings.get("telegram_token", "")).strip()
+    return jsonify(
+        {
+            "enabled": _bool_string(settings.get("telegram_enabled", "false")) == "true",
+            "chat_id": str(settings.get("telegram_chat_id", "")).strip(),
+            "token_set": bool(token),
+            "min_price": str(settings.get("telegram_min_price", "") or ""),
+            "max_price": str(settings.get("telegram_max_price", "") or ""),
+        }
+    )
+
+
+@app.put("/api/telegram/settings")
+def api_telegram_settings_put() -> Any:
+    payload = request.get_json(silent=True) or {}
+    current = get_settings()
+
+    token_to_store = str(current.get("telegram_token", "")).strip()
+    if "token" in payload:
+        token_candidate = str(payload.get("token") or "").strip()
+        if token_candidate and token_candidate != "••••••••":
+            token_to_store = token_candidate
+
+    chat_id = str(payload.get("chat_id", current.get("telegram_chat_id", ""))).strip()
+    enabled = _bool_string(payload.get("enabled", current.get("telegram_enabled", "false")))
+
+    try:
+        min_price = _normalize_optional_price(
+            payload.get("min_price", current.get("telegram_min_price", ""))
+        )
+        max_price = _normalize_optional_price(
+            payload.get("max_price", current.get("telegram_max_price", ""))
+        )
+    except (TypeError, ValueError):
+        return jsonify({"error": "min_price/max_price must be numbers >= 0"}), 400
+
+    if min_price and max_price and float(min_price) > float(max_price):
+        return jsonify({"error": "min_price must be <= max_price"}), 400
+
+    merged = update_settings(
+        {
+            "telegram_token": token_to_store,
+            "telegram_chat_id": chat_id,
+            "telegram_enabled": enabled,
+            "telegram_min_price": min_price,
+            "telegram_max_price": max_price,
+        }
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "settings": {
+                "enabled": _bool_string(merged.get("telegram_enabled", "false")) == "true",
+                "chat_id": str(merged.get("telegram_chat_id", "")).strip(),
+                "token_set": bool(str(merged.get("telegram_token", "")).strip()),
+                "min_price": str(merged.get("telegram_min_price", "") or ""),
+                "max_price": str(merged.get("telegram_max_price", "") or ""),
+            },
+        }
+    )
+
+
+@app.post("/api/telegram/test")
+def api_telegram_test() -> Any:
+    settings = get_settings()
+    token = str(settings.get("telegram_token", "")).strip()
+    chat_id = str(settings.get("telegram_chat_id", "")).strip()
+
+    if not token or not chat_id:
+        return jsonify({"success": False, "error": "telegram token/chat_id not configured"})
+
+    notifier = TelegramNotifier(token=token, chat_id=chat_id)
+    success = asyncio.run(notifier.test_connection())
+    if success:
+        return jsonify({"success": True, "error": None})
+    return jsonify({"success": False, "error": "failed to send test message"})
 
 
 @app.delete("/api/listings/inactive")

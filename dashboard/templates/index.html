@@ -167,7 +167,7 @@
 
     .form-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr auto;
+      grid-template-columns: 1fr 1fr auto auto auto;
       gap: 8px;
       margin-bottom: 10px;
     }
@@ -367,6 +367,7 @@
           <input id="addQueryName" placeholder="Query name">
           <input id="addQueryUrl" placeholder="https://www.kleinanzeigen.de/s-...">
           <input id="addQueryInterval" type="number" min="30" placeholder="По умолчанию (120)">
+          <label style="display:flex;align-items:center;gap:8px;margin:0;"><input type="checkbox" id="addQueryTelegram" checked>Telegram</label>
           <button class="btn btn-accent" id="addQueryBtn">Add</button>
         </div>
       </section>
@@ -381,7 +382,7 @@
           <table>
             <thead>
               <tr>
-                <th>Name</th><th>URL</th><th>Интервал (мин)</th><th>Active</th><th>Last Run</th><th>Next Run</th><th>Last Status</th><th>Listings</th><th>Actions</th>
+                <th>Name</th><th>URL</th><th>Интервал (мин)</th><th>Active</th><th>Telegram</th><th>Last Run</th><th>Next Run</th><th>Last Status</th><th>Listings</th><th>Actions</th>
               </tr>
             </thead>
             <tbody id="queriesBody"></tbody>
@@ -415,6 +416,23 @@
       </section>
 
       <section class="panel">
+        <h2>Telegram Notifications</h2>
+        <div class="settings-grid">
+          <div><label for="telegramToken">Bot Token</label><input type="password" id="telegramToken"></div>
+          <div><label for="telegramChatId">Chat ID</label><input type="text" id="telegramChatId"></div>
+          <div><label for="telegramEnabled">Enabled</label><input type="checkbox" id="telegramEnabled"></div>
+          <div><label for="telegramMinPrice">Min Price €</label><input type="number" min="0" step="1" id="telegramMinPrice" placeholder="optional"></div>
+          <div><label for="telegramMaxPrice">Max Price €</label><input type="number" min="0" step="1" id="telegramMaxPrice" placeholder="optional"></div>
+        </div>
+        <div class="inline-row" style="margin-bottom:8px;">
+          <button class="btn btn-accent" id="saveTelegramBtn">Save</button>
+          <button class="btn" id="testTelegramBtn">Test Connection</button>
+          <span id="telegramTestMsg" class="badge"></span>
+        </div>
+        <div id="telegramMsg" class="msg hidden"></div>
+      </section>
+
+      <section class="panel">
         <h2>Data Management</h2>
         <div class="inline-row">
           <button class="btn" id="cleanupInactiveBtn">Delete Inactive Older 30 Days</button>
@@ -430,6 +448,7 @@
       listingsPage: 1,
       listingsTotalPages: 1,
       activePollers: new Map(),
+      telegramTokenSet: false,
     };
 
     let dailyChart;
@@ -617,6 +636,7 @@
           <td data-role="url"><a class="link" target="_blank" rel="noreferrer noopener" href="${escapeHtml(q.url)}">${escapeHtml(q.url)}</a></td>
           <td data-role="interval" data-interval="${q.interval_minutes === null || q.interval_minutes === undefined ? "" : q.interval_minutes}">${escapeHtml(displayQueryInterval(q.interval_minutes))}</td>
           <td data-role="active" data-active="${q.is_active ? "1" : "0"}">${q.is_active ? '<span class="good">on</span>' : '<span class="bad">off</span>'}</td>
+          <td data-role="telegram" data-telegram="${q.telegram_enabled ? "1" : "0"}">${q.telegram_enabled ? '<span class="good">on</span>' : '<span class="bad">off</span>'}</td>
           <td>${escapeHtml(formatDate(q.last_run_at))}</td>
           <td>${escapeHtml(formatDate(q.next_run_at))}</td>
           <td>${statusBadge(q.last_status)} ${runningText}</td>
@@ -700,9 +720,10 @@
       const name = document.getElementById("addQueryName").value.trim();
       const url = document.getElementById("addQueryUrl").value.trim();
       const intervalRaw = document.getElementById("addQueryInterval").value.trim();
+      const telegram_enabled = document.getElementById("addQueryTelegram").checked;
       if (!name || !url) return;
 
-      const payload = { name, url, interval_minutes: intervalRaw ? Number(intervalRaw) : null };
+      const payload = { name, url, interval_minutes: intervalRaw ? Number(intervalRaw) : null, telegram_enabled };
 
       try {
         await apiJson("/api/queries", {
@@ -713,6 +734,7 @@
         document.getElementById("addQueryName").value = "";
         document.getElementById("addQueryUrl").value = "";
         document.getElementById("addQueryInterval").value = "";
+        document.getElementById("addQueryTelegram").checked = true;
         await loadQueries();
       } catch (error) {
         document.getElementById("queriesMsg").textContent = error.message;
@@ -736,6 +758,7 @@
       const currentUrlText = row.querySelector('[data-role="url"] a')?.getAttribute("href") || "";
       const currentInterval = row.querySelector('[data-role="interval"]')?.dataset.interval || "";
       const currentActive = row.querySelector('[data-role="active"]')?.dataset.active === "1";
+      const currentTelegram = row.querySelector('[data-role="telegram"]')?.dataset.telegram === "1";
 
       row.querySelector('[data-role="name"]').innerHTML = `<input id="editName${queryId}" value="${escapeHtml(currentName)}">`;
       row.querySelector('[data-role="url"]').innerHTML = `<input id="editUrl${queryId}" value="${escapeHtml(currentUrlText)}">`;
@@ -744,6 +767,7 @@
       const actionsCell = row.querySelector("td:last-child");
       actionsCell.innerHTML = `<div class="inline-row">
         <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="editActive${queryId}" ${currentActive ? "checked" : ""}>active</label>
+        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="editTelegram${queryId}" ${currentTelegram ? "checked" : ""}>telegram</label>
         <button class="btn btn-accent" onclick="saveQuery(${queryId})">Save</button>
         <button class="btn" onclick="loadQueries()">Cancel</button>
       </div>`;
@@ -754,13 +778,14 @@
         const name = document.getElementById(`editName${queryId}`).value.trim();
         const url = document.getElementById(`editUrl${queryId}`).value.trim();
         const is_active = document.getElementById(`editActive${queryId}`).checked;
+        const telegram_enabled = document.getElementById(`editTelegram${queryId}`).checked;
         const intervalRaw = document.getElementById(`editInterval${queryId}`).value.trim();
         const interval_minutes = intervalRaw ? Number(intervalRaw) : null;
 
         await apiJson(`/api/queries/${queryId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, url, is_active, interval_minutes }),
+          body: JSON.stringify({ name, url, is_active, interval_minutes, telegram_enabled }),
         });
         await loadQueries();
       } catch (error) {
@@ -779,14 +804,29 @@
     }
 
     async function loadSettings() {
-      const settings = await apiJson("/api/settings");
+      const [settings, telegramSettings, stats] = await Promise.all([
+        apiJson("/api/settings"),
+        apiJson("/api/telegram/settings"),
+        apiJson("/api/data/stats"),
+      ]);
+
       document.getElementById("intervalMinutes").value = settings.interval_minutes || "120";
       document.getElementById("minDelaySeconds").value = settings.min_delay_seconds || "2";
       document.getElementById("maxDelaySeconds").value = settings.max_delay_seconds || "6";
       document.getElementById("maxPages").value = settings.max_pages || "5";
       document.getElementById("headlessMode").value = settings.headless || "true";
 
-      const stats = await apiJson("/api/data/stats");
+      const tokenInput = document.getElementById("telegramToken");
+      state.telegramTokenSet = Boolean(telegramSettings.token_set);
+      tokenInput.value = "";
+      tokenInput.placeholder = telegramSettings.token_set ? "••••••••" : "";
+
+      document.getElementById("telegramChatId").value = telegramSettings.chat_id || "";
+      document.getElementById("telegramEnabled").checked = Boolean(telegramSettings.enabled);
+      document.getElementById("telegramMinPrice").value = telegramSettings.min_price || "";
+      document.getElementById("telegramMaxPrice").value = telegramSettings.max_price || "";
+      document.getElementById("telegramTestMsg").textContent = "";
+
       document.getElementById("dbStatsBadge").textContent = `DB size: ${stats.db_size_mb} MB | Records: ${stats.total_records}`;
     }
 
@@ -810,6 +850,57 @@
         msg.textContent = result.message || "Scheduler restarted";
       } catch (error) {
         msg.textContent = error.message;
+      }
+    }
+
+    async function saveTelegramSettings() {
+      const payload = {
+        token: document.getElementById("telegramToken").value.trim(),
+        chat_id: document.getElementById("telegramChatId").value.trim(),
+        enabled: document.getElementById("telegramEnabled").checked,
+        min_price: document.getElementById("telegramMinPrice").value.trim(),
+        max_price: document.getElementById("telegramMaxPrice").value.trim(),
+      };
+
+      const msg = document.getElementById("telegramMsg");
+      msg.classList.remove("hidden");
+
+      try {
+        const result = await apiJson("/api/telegram/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        state.telegramTokenSet = Boolean(result.settings?.token_set);
+        const tokenInput = document.getElementById("telegramToken");
+        tokenInput.value = "";
+        tokenInput.placeholder = state.telegramTokenSet ? "••••••••" : "";
+        msg.textContent = "Telegram settings saved";
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    }
+
+    async function testTelegramConnection() {
+      const resultEl = document.getElementById("telegramTestMsg");
+      resultEl.textContent = "Testing...";
+
+      try {
+        const result = await apiJson("/api/telegram/test", { method: "POST" });
+        if (result.success) {
+          resultEl.textContent = "Connected";
+          resultEl.classList.add("good");
+          resultEl.classList.remove("bad");
+        } else {
+          resultEl.textContent = result.error || "Connection failed";
+          resultEl.classList.add("bad");
+          resultEl.classList.remove("good");
+        }
+      } catch (error) {
+        resultEl.textContent = error.message;
+        resultEl.classList.add("bad");
+        resultEl.classList.remove("good");
       }
     }
 
@@ -843,6 +934,8 @@
       document.getElementById("runAllBtn").addEventListener("click", runAllQueries);
 
       document.getElementById("saveSettingsBtn").addEventListener("click", saveSettings);
+      document.getElementById("saveTelegramBtn").addEventListener("click", saveTelegramSettings);
+      document.getElementById("testTelegramBtn").addEventListener("click", testTelegramConnection);
       document.getElementById("cleanupInactiveBtn").addEventListener("click", cleanupInactive);
       document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
     }
