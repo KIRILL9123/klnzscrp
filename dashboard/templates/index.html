@@ -590,10 +590,14 @@
         <div id="modalMargin">-</div>
       </div>
 
+      <div class="modal-section" id="suggestedPriceSection" style="display: none;">
+        <div class="modal-label">Рекомендуемая цена покупки</div>
+        <div id="modalSuggestedPrice" style="color: var(--good); font-weight: bold;">-</div>
+      </div>
+
       <div class="modal-section" style="font-size: 12px; color: var(--muted);">
         <div class="modal-label">Анализ рынка</div>
-        <div>Медиана: <span id="modalMedian">-</span> € (<span id="modalSamples">-</span> объявл.)</div>
-        <div>Эта цена: <span id="modalPriceDelta">-</span></div>
+        <div id="marketStatsContent">-</div>
         <div>Анализировалось: <span id="modalAnalyzedAt">-</span></div>
       </div>
     </div>
@@ -816,7 +820,22 @@
       }
       
       try {
-        const result = await apiJson(`/api/analyzer/analyze/${listingId}`, { method: "POST" });
+        const response = await fetch(`/api/analyzer/analyze/${listingId}`, { method: "POST" });
+        const result = await response.json();
+        
+        if (response.status === 422) {
+          // Handle insufficient data
+          const cell = document.getElementById(`ai-cell-${listingId}`);
+          if (cell) {
+            cell.innerHTML = '<span class="na">Мало данных</span>';
+          }
+          return;
+        }
+        
+        if (!response.ok) {
+          throw new Error(result.error || response.statusText || "Request failed");
+        }
+        
         if (result.analysis && result.analysis.error) {
           throw new Error(result.analysis.error);
         }
@@ -838,6 +857,7 @@
           risks: risksStr,
           resale_margin: result.analysis.resale_margin,
           recommendation: result.analysis.recommendation,
+          suggested_price: result.analysis.suggested_price,
           analyzed_at: new Date().toISOString(),
           market: result.market_stats
         };
@@ -899,23 +919,32 @@
           }
         }
 
-        if (data.market) {
-          document.getElementById("modalMedian").textContent = data.market.median_price || "-";
-          document.getElementById("modalSamples").textContent = data.market.sample_count || "0";
+        // Update suggested price if present
+        if (data.suggested_price !== null && data.suggested_price !== undefined) {
+          document.getElementById("suggestedPriceSection").style.display = "block";
+          document.getElementById("modalSuggestedPrice").textContent = `${data.suggested_price} €`;
         } else {
-          document.getElementById("modalMedian").textContent = "-";
-          document.getElementById("modalSamples").textContent = "-";
+          document.getElementById("suggestedPriceSection").style.display = "none";
         }
 
-        const priceDeltaEl = document.getElementById("modalPriceDelta");
-        const listingPrice = Number(data.price);
-        const marketMedian = Number(data.market && data.market.median_price);
-        if (Number.isFinite(listingPrice) && Number.isFinite(marketMedian) && marketMedian > 0) {
-          const diffPct = ((listingPrice - marketMedian) / marketMedian) * 100;
-          const sign = diffPct > 0 ? "+" : "";
-          priceDeltaEl.textContent = `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 }).format(listingPrice)} EUR (${sign}${diffPct.toFixed(0)}%)`;
+        // Update market stats content
+        const marketStatsEl = document.getElementById("marketStatsContent");
+        if (data.market && data.market.sample_count >= 5) {
+          const median = data.market.median_price;
+          const samples = data.market.sample_count;
+          const price = Number(data.price);
+          
+          let marketContent = `<div>Медиана: ${median ? median.toFixed(0) : "-"} € (${samples} объявл.)</div>`;
+          
+          if (Number.isFinite(price) && median && median > 0) {
+            const pct = ((price - median) / median * 100).toFixed(0);
+            const sign = price >= median ? "+" : "";
+            marketContent += `<div>Эта цена: ${price} € (${sign}${pct}% от медианы)</div>`;
+          }
+          
+          marketStatsEl.innerHTML = marketContent;
         } else {
-          priceDeltaEl.textContent = "-";
+          marketStatsEl.innerHTML = "<div>Недостаточно данных для анализа рынка<br>(нужно минимум 5 объявлений с ценой)</div>";
         }
         
         document.getElementById("modalAnalyzedAt").textContent = data.analyzed_at ? formatDate(data.analyzed_at) : "-";

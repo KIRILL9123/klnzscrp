@@ -995,6 +995,12 @@ def api_analyzer_analyze_listing(listing_id: str) -> Any:
 
     if query_id is not None:
         market_stats = get_market_stats(query_id)
+        if market_stats.get("sample_count", 0) < 5:
+            return jsonify({
+                "error": "insufficient_data",
+                "message": "Недостаточно данных: нужно минимум 5 объявлений с ценой по этому поиску",
+                "sample_count": market_stats.get("sample_count", 0)
+            }), 422
     else:
         market_stats = {
             "median_price": None,

@@ -17,49 +17,84 @@ class OllamaAnalyzer:
     def analyze(self, listing: dict, market_stats: dict) -> dict:
         """Run a synchronous Ollama analysis for a listing and market context."""
         system_prompt = (
-            "Du bist ein Experte fur Schnappchenanalyse auf Kleinanzeigen.de.\n"
-            "Analysiere das Inserat und antworte NUR mit einem JSON-Objekt.\n"
-            "Kein Text auBerhalb von JSON. Kein Markdown. Nur reines JSON."
+            "Du bist ein Experte für Wiederverkauf von Elektronik auf Kleinanzeigen.de.\n"
+            "Deine Aufgabe: analysiere das Inserat und bewerte es als\n"
+            "Wiederverkaufsgelegenheit.\n"
+            "Antworte NUR mit einem JSON-Objekt. Kein Text außerhalb von JSON.\n"
+            "Kein Markdown. Nur reines JSON.\n"
+            "Alle Textfelder (verdict, risks, resale_margin) MÜSSEN auf Russisch sein."
         )
 
         title = str(listing.get("title") or "Nicht angegeben")
         price = listing.get("price")
-        price_text = f"{price}" if price is not None else "Nicht angegeben"
-        negotiable_hint = "(VB - verhandelbar)" if bool(listing.get("price_negotiable")) else ""
+        price_negotiable = bool(listing.get("price_negotiable"))
+        
+        if price is not None:
+            price_str = f"{price} €"
+        elif price_negotiable:
+            price_str = "VB (Verhandlungsbasis)"
+        else:
+            price_str = "Nicht angegeben"
+        
         location = str(listing.get("location") or "Nicht angegeben")
         category = str(listing.get("category") or "Nicht angegeben")
         description = str(listing.get("description") or "Nicht angegeben")
 
         sample_count = int(market_stats.get("sample_count") or 0)
-        query_name = str(market_stats.get("query_name") or "ahnlichen Inseraten")
         median_price = market_stats.get("median_price")
         min_price = market_stats.get("min_price")
         max_price = market_stats.get("max_price")
 
-        median_text = f"{median_price}" if median_price is not None else "Nicht angegeben"
-        min_text = f"{min_price}" if min_price is not None else "Nicht angegeben"
-        max_text = f"{max_price}" if max_price is not None else "Nicht angegeben"
+        median_price_str = f"{median_price:.0f} €" if median_price is not None else "Keine Daten"
+        min_price_str = f"{min_price} €" if min_price is not None else "—"
+        max_price_str = f"{max_price} €" if max_price is not None else "—"
+        
+        price_comparison = ""
+        if price is not None and median_price is not None:
+            diff = price - median_price
+            pct = (diff / median_price) * 100 if median_price != 0 else 0
+            if diff < 0:
+                price_comparison = f"Dieser Preis liegt {abs(pct):.0f}% UNTER dem Median."
+            elif diff > 0:
+                price_comparison = f"Dieser Preis liegt {pct:.0f}% ÜBER dem Median."
+            else:
+                price_comparison = "Dieser Preis entspricht genau dem Median."
+        
+        suggested_price = None
+        if price is None and (price_negotiable or True):
+            if median_price is not None:
+                suggested_price = int(median_price * 0.8)
 
         user_prompt = (
-            "Inserat:\n"
+            f"Inserat:\n"
             f"Titel: {title}\n"
-            f"Preis: {price_text} EUR {negotiable_hint}\n"
+            f"Preis: {price_str}\n"
             f"Standort: {location}\n"
             f"Kategorie: {category}\n"
             f"Beschreibung: {description}\n\n"
-            f"Marktdaten aus {sample_count} Inseraten zu {query_name}:\n"
-            f"- Medianpreis: {median_text} EUR\n"
-            f"- Minimum: {min_text} EUR\n"
-            f"- Maximum: {max_text} EUR\n\n"
-            "Antworte mit diesem JSON-Schema:\n"
+            f"Marktdaten ({sample_count} ähnliche Inserate auf Kleinanzeigen.de):\n"
+            f"Medianpreis: {median_price_str}\n"
+            f"Minimum: {min_price_str}\n"
+            f"Maximum: {max_price_str}\n\n"
+            f"{price_comparison}\n\n"
+            f"Bewerte nach diesen Kriterien:\n"
+            f"1. Preis im Vergleich zum Marktmedian\n"
+            f"2. Wiederverkaufspotenzial (typische Marge für Elektronik: 15-30%)\n"
+            f"3. Risiken: fehlende Beschreibung, unklarer Zustand, verdächtig niedriger Preis\n"
+            f"4. Falls kein Preis angegeben (VB): empfehle konkreten Verhandlungspreis\n"
+            f"   basierend auf dem Marktmedian minus 20%\n\n"
+            f"Antworte mit diesem JSON-Schema:\n"
             "{\n"
             "  \"score\": <int 1-10>,\n"
-            "  \"verdict\": \"<kurzes Urteil auf Russisch>\",\n"
-            "  \"price_assessment\": \"<'underpriced'|'fair'|'overpriced'>\",\n"
+            "  \"verdict\": \"<2-3 Sätze auf Russisch>\",\n"
+            "  \"price_assessment\": \"<'underpriced'|'fair'|'overpriced'|'unknown'>\",\n"
             "  \"risks\": [\"<Risiko auf Russisch>\"],\n"
-            "  \"resale_margin\": \"<geschatzte Marge auf Russisch oder 'Nicht abschatzbar'>\",\n"
-            "  \"recommendation\": \"<'buy'|'skip'|'negotiate'>\"\n"
-            "}"
+            "  \"resale_margin\": \"<konkrete Schätzung auf Russisch, z.B. '~50-80€ Gewinn möglich'>\",\n"
+            "  \"recommendation\": \"<'buy'|'skip'|'negotiate'>\",\n"
+            f"  \"suggested_price\": {suggested_price if suggested_price else 'null'}\n"
+            "}\n\n"
+            "suggested_price: falls VB oder Preis fehlt — empfohlener Kaufpreis in Euro.\n"
+            "Falls Preis bekannt — null."
         )
 
         payload = {

@@ -382,7 +382,7 @@ def get_market_stats(query_id: int) -> dict:
             (query_id,),
         ).fetchall()
 
-    prices = sorted(int(row["price"]) for row in rows)
+    prices = sorted(int(row[0]) for row in rows)
     sample_count = len(prices)
     if sample_count == 0:
         return {
