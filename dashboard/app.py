@@ -15,6 +15,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, Response, jsonify, render_template, request
 
+from analyzer.ollama import OllamaAnalyzer
 from notifier.telegram import TelegramNotifier
 from scraper.browser import scrape_search
 from storage.database import (
@@ -24,12 +25,14 @@ from storage.database import (
     delete_listings_by_query_for_dashboard,
     delete_query_and_listings_for_dashboard,
     finish_scrape_log,
+    get_market_stats,
     get_latest_scrape_status_for_query,
     get_query_for_dashboard,
     get_scrape_log,
     get_settings,
     get_listing_ids_for_query,
     init_dashboard_db,
+    save_ai_analysis,
     list_queries_for_dashboard,
     list_scrape_logs,
     mark_inactive,
@@ -58,6 +61,16 @@ TELEGRAM_SETTINGS_DEFAULTS = {
     "telegram_min_price": "",
     "telegram_max_price": "",
 }
+
+OLLAMA_SETTINGS_DEFAULTS = {
+    "ollama_base_url": "http://localhost:11434",
+    "ollama_model": "qwen2.5:7b",
+}
+
+ollama_analyzer = OllamaAnalyzer(
+    base_url=OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"],
+    model=OLLAMA_SETTINGS_DEFAULTS["ollama_model"],
+)
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -141,6 +154,28 @@ def _ensure_telegram_settings_defaults() -> None:
     missing = {key: value for key, value in TELEGRAM_SETTINGS_DEFAULTS.items() if key not in settings}
     if missing:
         update_settings(missing)
+
+
+def _ensure_ollama_settings_defaults() -> None:
+    settings = get_settings()
+    missing = {key: value for key, value in OLLAMA_SETTINGS_DEFAULTS.items() if key not in settings}
+    if missing:
+        update_settings(missing)
+
+
+def _build_ollama_analyzer_from_settings() -> OllamaAnalyzer:
+    settings = get_settings()
+    base_url = str(
+        settings.get("ollama_base_url", OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"])
+    ).strip()
+    model = str(settings.get("ollama_model", OLLAMA_SETTINGS_DEFAULTS["ollama_model"])).strip()
+
+    if not base_url:
+        base_url = OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"]
+    if not model:
+        model = OLLAMA_SETTINGS_DEFAULTS["ollama_model"]
+
+    return OllamaAnalyzer(base_url=base_url, model=model)
 
 
 def _get_telegram_runtime_settings() -> dict[str, Any]:
@@ -443,8 +478,12 @@ def _build_scraper_status() -> dict[str, Any]:
 
 
 def _bootstrap() -> None:
+    global ollama_analyzer
+
     init_dashboard_db()
     _ensure_telegram_settings_defaults()
+    _ensure_ollama_settings_defaults()
+    ollama_analyzer = _build_ollama_analyzer_from_settings()
     _sync_config_from_settings(_get_typed_settings())
 
     if not scheduler.running:
@@ -634,7 +673,14 @@ def api_listings() -> Any:
                 l.location,
                 l.first_seen_at,
                 l.url,
-                l.is_active
+                l.is_active,
+                l.ai_score,
+                l.ai_verdict,
+                l.ai_price_assessment,
+                l.ai_risks,
+                l.ai_resale_margin,
+                l.ai_recommendation,
+                l.ai_analyzed_at
             FROM listings l
             {where_sql}
             ORDER BY {order_sql}
@@ -850,6 +896,127 @@ def api_settings_put() -> Any:
     _reload_scheduler_jobs()
 
     return jsonify({"settings": merged, "message": "Scheduler restarted"})
+
+
+@app.get("/api/analyzer/status")
+def api_analyzer_status() -> Any:
+    return jsonify(
+        {
+            "available": ollama_analyzer.is_available(),
+            "model": ollama_analyzer.model,
+            "base_url": ollama_analyzer.base_url,
+        }
+    )
+
+
+@app.get("/api/analyzer/settings")
+def api_analyzer_settings_get() -> Any:
+    settings = get_settings()
+    return jsonify(
+        {
+            "ollama_base_url": str(
+                settings.get("ollama_base_url", OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"])
+            ).strip()
+            or OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"],
+            "ollama_model": str(settings.get("ollama_model", OLLAMA_SETTINGS_DEFAULTS["ollama_model"])).strip()
+            or OLLAMA_SETTINGS_DEFAULTS["ollama_model"],
+        }
+    )
+
+
+@app.put("/api/analyzer/settings")
+def api_analyzer_settings_put() -> Any:
+    global ollama_analyzer
+
+    payload = request.get_json(silent=True) or {}
+    base_url = str(payload.get("ollama_base_url", "")).strip()
+    model = str(payload.get("ollama_model", "")).strip()
+
+    if not base_url:
+        base_url = OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"]
+    if not model:
+        model = OLLAMA_SETTINGS_DEFAULTS["ollama_model"]
+
+    merged = update_settings(
+        {
+            "ollama_base_url": base_url,
+            "ollama_model": model,
+        }
+    )
+
+    ollama_analyzer = OllamaAnalyzer(base_url=base_url, model=model)
+
+    return jsonify(
+        {
+            "settings": {
+                "ollama_base_url": str(merged.get("ollama_base_url", base_url)).strip() or base_url,
+                "ollama_model": str(merged.get("ollama_model", model)).strip() or model,
+            }
+        }
+    )
+
+
+@app.post("/api/analyzer/analyze/<listing_id>")
+def api_analyzer_analyze_listing(listing_id: str) -> Any:
+    with _get_conn() as conn:
+        listing_row = conn.execute(
+            """
+            SELECT id, title, price, price_negotiable, location, category, description, url
+            FROM listings
+            WHERE id = ?
+            """,
+            (listing_id,),
+        ).fetchone()
+        if not listing_row:
+            return jsonify({"error": "listing not found"}), 404
+
+        link_row = conn.execute(
+            """
+            SELECT query_id
+            FROM listing_query_links
+            WHERE listing_id = ?
+            ORDER BY query_id ASC
+            LIMIT 1
+            """,
+            (listing_id,),
+        ).fetchone()
+
+        query_id = int(link_row["query_id"]) if link_row else None
+        listing = dict(listing_row)
+
+        query_name = None
+        if query_id is not None:
+            query_row = conn.execute(
+                "SELECT name FROM search_queries WHERE id = ?",
+                (query_id,),
+            ).fetchone()
+            if query_row:
+                query_name = str(query_row["name"])
+
+    if query_id is not None:
+        market_stats = get_market_stats(query_id)
+    else:
+        market_stats = {
+            "median_price": None,
+            "min_price": None,
+            "max_price": None,
+            "sample_count": 0,
+        }
+
+    market_stats["query_name"] = query_name or "Nicht angegeben"
+
+    analysis = ollama_analyzer.analyze(listing, market_stats)
+    if "error" not in analysis:
+        save_ai_analysis(listing_id, analysis)
+
+    return jsonify(
+        {
+            "listing": listing,
+            "query_id": query_id,
+            "market_stats": market_stats,
+            "analysis": analysis,
+        }
+    )
 
 
 @app.get("/api/telegram/settings")

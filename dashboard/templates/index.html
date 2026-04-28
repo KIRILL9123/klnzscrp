@@ -269,6 +269,104 @@
       color: var(--muted);
     }
 
+    /* Modal Styles */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      width: 90%;
+      max-width: 500px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 20px;
+      position: relative;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 10px;
+      right: 15px;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 24px;
+      cursor: pointer;
+      padding: 0;
+      width: auto;
+    }
+
+    .modal-close:hover {
+      color: var(--text);
+    }
+
+    .ai-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      cursor: pointer;
+      text-align: center;
+      min-width: 60px;
+    }
+    
+    .ai-badge:hover {
+      filter: brightness(1.2);
+    }
+
+    .ai-badge.good { background: rgba(52, 211, 153, 0.1); border-color: var(--good); color: var(--good); }
+    .ai-badge.warn { background: rgba(251, 191, 36, 0.1); border-color: var(--warn); color: var(--warn); }
+    .ai-badge.bad { background: rgba(251, 113, 133, 0.1); border-color: var(--bad); color: var(--bad); }
+
+    .ai-btn {
+      padding: 2px 8px;
+      font-size: 11px;
+      min-width: 60px;
+    }
+
+    .modal h3 {
+      margin-top: 0;
+      margin-bottom: 15px;
+      font-size: 16px;
+      padding-right: 20px;
+    }
+
+    .modal-section {
+      margin-bottom: 15px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-section:last-child {
+      border-bottom: none;
+      margin-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .modal-label {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: 4px;
+    }
+
     @media (max-width: 1100px) {
       .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .two-col { grid-template-columns: 1fr; }
@@ -347,7 +445,7 @@
 
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>First Seen</th><th>Status</th></tr></thead>
+            <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>First Seen</th><th>Status</th><th>AI</th></tr></thead>
             <tbody id="listingsBody"></tbody>
           </table>
         </div>
@@ -431,6 +529,19 @@
         </div>
         <div id="telegramMsg" class="msg hidden"></div>
       </section>
+      <section class="panel">
+        <h2>AI Analyzer (Ollama)</h2>
+        <div class="settings-grid">
+          <div><label for="ollamaUrl">Ollama URL</label><input type="text" id="ollamaUrl" placeholder="http://localhost:11434"></div>
+          <div><label for="ollamaModel">Model</label><input type="text" id="ollamaModel" placeholder="qwen2.5:7b"></div>
+        </div>
+        <div class="inline-row" style="margin-bottom:8px;">
+          <button class="btn btn-accent" id="saveOllamaBtn">Save</button>
+          <button class="btn" id="checkOllamaBtn">Check Status</button>
+          <span id="ollamaStatusBadge" class="badge"></span>
+        </div>
+        <div id="ollamaMsg" class="msg hidden"></div>
+      </section>
 
       <section class="panel">
         <h2>Data Management</h2>
@@ -441,6 +552,51 @@
         </div>
       </section>
     </section>
+  </div>
+
+  <div id="aiModal" class="modal-overlay">
+    <div class="modal">
+      <button class="modal-close" onclick="closeAiModal()">&times;</button>
+      <h3 id="modalTitle">-</h3>
+      
+      <div class="modal-section">
+        <div class="two-col">
+          <div>
+            <div class="modal-label">Оценка</div>
+            <div id="modalScore" style="font-size: 18px; font-weight: bold;">-</div>
+          </div>
+          <div>
+            <div class="modal-label">Цена / Рекомендация</div>
+            <div>
+              <span id="modalPriceAssess" class="badge"></span>
+              <span id="modalRec" class="badge" style="margin-left: 5px;"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-label">Вердикт</div>
+        <div id="modalVerdict">-</div>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-label">Риски</div>
+        <ul id="modalRisks" style="margin: 5px 0 0; padding-left: 20px; font-size: 13px;"></ul>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-label">Маржа</div>
+        <div id="modalMargin">-</div>
+      </div>
+
+      <div class="modal-section" style="font-size: 12px; color: var(--muted);">
+        <div class="modal-label">Анализ рынка</div>
+        <div>Медиана: <span id="modalMedian">-</span> € (<span id="modalSamples">-</span> объявл.)</div>
+        <div>Эта цена: <span id="modalPriceDelta">-</span></div>
+        <div>Анализировалось: <span id="modalAnalyzedAt">-</span></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -612,17 +768,172 @@
       const body = document.getElementById("listingsBody");
       body.innerHTML = "";
       for (const row of data.listings || []) {
+        let aiCell = "";
+        if (row.ai_score !== null && row.ai_score !== undefined) {
+          const score = parseInt(row.ai_score);
+          let badgeClass = "bad";
+          let icon = "✕";
+          if (score >= 7) { badgeClass = "good"; icon = "★"; }
+          else if (score >= 4) { badgeClass = "warn"; icon = "◆"; }
+          
+          const rawRisks = row.ai_risks || "[]";
+          const analysisData = {
+            title: row.title,
+            price: row.price,
+            score: row.ai_score,
+            verdict: row.ai_verdict,
+            price_assessment: row.ai_price_assessment,
+            risks: rawRisks,
+            resale_margin: row.ai_resale_margin,
+            recommendation: row.ai_recommendation,
+            analyzed_at: row.ai_analyzed_at
+          };
+          
+          const dataStr = escapeHtml(JSON.stringify(analysisData));
+          aiCell = `<div class="ai-badge ${badgeClass}" onclick="showAnalysisModal('${row.id}', this)" data-analysis="${dataStr}">${icon} ${score}/10</div>`;
+        } else {
+          aiCell = `<button class="btn ai-btn" id="analyze-btn-${row.id}" onclick="analyzeListing('${row.id}')">Analyse</button>`;
+        }
+
         body.insertAdjacentHTML("beforeend", `<tr>
           <td><a class="link" href="${escapeHtml(row.url || "#")}" target="_blank" rel="noreferrer noopener">${escapeHtml(row.title || "Untitled")}</a></td>
           <td>${formatPrice(row.price, row.price_negotiable)}</td>
           <td>${escapeHtml(row.location || "-")}</td>
           <td>${escapeHtml(formatDate(row.first_seen_at))}</td>
           <td>${row.is_active ? '<span class="good">active</span>' : '<span class="bad">inactive</span>'}</td>
+          <td id="ai-cell-${row.id}">${aiCell}</td>
         </tr>`);
       }
 
       refreshListingsPager();
     }
+
+    async function analyzeListing(listingId) {
+      const btn = document.getElementById(`analyze-btn-${listingId}`);
+      if (btn) {
+        btn.textContent = "Analyzing...";
+        btn.disabled = true;
+      }
+      
+      try {
+        const result = await apiJson(`/api/analyzer/analyze/${listingId}`, { method: "POST" });
+        if (result.analysis && result.analysis.error) {
+          throw new Error(result.analysis.error);
+        }
+        
+        // Render badge directly
+        const score = parseInt(result.analysis.score);
+        let badgeClass = "bad";
+        let icon = "✕";
+        if (score >= 7) { badgeClass = "good"; icon = "★"; }
+        else if (score >= 4) { badgeClass = "warn"; icon = "◆"; }
+        
+        const risksStr = JSON.stringify(result.analysis.risks || []);
+        const analysisData = {
+          title: result.listing ? result.listing.title : "Listing",
+          price: result.listing ? result.listing.price : null,
+          score: result.analysis.score,
+          verdict: result.analysis.verdict,
+          price_assessment: result.analysis.price_assessment,
+          risks: risksStr,
+          resale_margin: result.analysis.resale_margin,
+          recommendation: result.analysis.recommendation,
+          analyzed_at: new Date().toISOString(),
+          market: result.market_stats
+        };
+        
+        const dataStr = escapeHtml(JSON.stringify(analysisData));
+        const cell = document.getElementById(`ai-cell-${listingId}`);
+        let insertedBadge = null;
+        if (cell) {
+          cell.innerHTML = `<div class="ai-badge ${badgeClass}" onclick="showAnalysisModal('${listingId}', this)" data-analysis="${dataStr}">${icon} ${score}/10</div>`;
+          insertedBadge = cell.querySelector(".ai-badge");
+        }
+
+        // Open modal immediately after successful analysis.
+        if (insertedBadge) {
+          showAnalysisModal(listingId, insertedBadge);
+        }
+      } catch (error) {
+        alert("Analysis failed: " + error.message);
+        if (btn) {
+          btn.textContent = "Analyse";
+          btn.disabled = false;
+        }
+      }
+    }
+
+    function showAnalysisModal(listingId, el) {
+      try {
+        const data = JSON.parse(el.dataset.analysis);
+        document.getElementById("modalTitle").textContent = data.title || "Анализ";
+        
+        const score = parseInt(data.score);
+        let scoreColor = "var(--bad)";
+        let icon = "✕";
+        if (score >= 7) { scoreColor = "var(--good)"; icon = "★"; }
+        else if (score >= 4) { scoreColor = "var(--warn)"; icon = "◆"; }
+        
+        const scoreEl = document.getElementById("modalScore");
+        scoreEl.textContent = `${icon} ${score}/10`;
+        scoreEl.style.color = scoreColor;
+
+        document.getElementById("modalPriceAssess").textContent = data.price_assessment || "-";
+        document.getElementById("modalRec").textContent = data.recommendation ? data.recommendation.toUpperCase() : "-";
+        document.getElementById("modalVerdict").textContent = data.verdict || "-";
+        document.getElementById("modalMargin").textContent = data.resale_margin || "-";
+        
+        const risksList = document.getElementById("modalRisks");
+        risksList.innerHTML = "";
+        let risks = [];
+        try {
+          if (typeof data.risks === "string") risks = JSON.parse(data.risks);
+          else if (Array.isArray(data.risks)) risks = data.risks;
+        } catch(e) {}
+        
+        if (!risks || risks.length === 0) {
+          risksList.innerHTML = "<li>Нет явных рисков</li>";
+        } else {
+          for (const r of risks) {
+            risksList.insertAdjacentHTML("beforeend", `<li>${escapeHtml(r)}</li>`);
+          }
+        }
+
+        if (data.market) {
+          document.getElementById("modalMedian").textContent = data.market.median_price || "-";
+          document.getElementById("modalSamples").textContent = data.market.sample_count || "0";
+        } else {
+          document.getElementById("modalMedian").textContent = "-";
+          document.getElementById("modalSamples").textContent = "-";
+        }
+
+        const priceDeltaEl = document.getElementById("modalPriceDelta");
+        const listingPrice = Number(data.price);
+        const marketMedian = Number(data.market && data.market.median_price);
+        if (Number.isFinite(listingPrice) && Number.isFinite(marketMedian) && marketMedian > 0) {
+          const diffPct = ((listingPrice - marketMedian) / marketMedian) * 100;
+          const sign = diffPct > 0 ? "+" : "";
+          priceDeltaEl.textContent = `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 }).format(listingPrice)} EUR (${sign}${diffPct.toFixed(0)}%)`;
+        } else {
+          priceDeltaEl.textContent = "-";
+        }
+        
+        document.getElementById("modalAnalyzedAt").textContent = data.analyzed_at ? formatDate(data.analyzed_at) : "-";
+
+        document.getElementById("aiModal").classList.add("active");
+      } catch (err) {
+        console.error("Failed to parse analysis data", err);
+      }
+    }
+
+    function closeAiModal() {
+      document.getElementById("aiModal").classList.remove("active");
+    }
+
+    // Close modal on click outside
+    document.getElementById("aiModal").addEventListener("click", function(e) {
+      if (e.target === this) closeAiModal();
+    });
 
     async function loadQueries() {
       const data = await apiJson("/api/queries");
@@ -804,9 +1115,11 @@
     }
 
     async function loadSettings() {
-      const [settings, telegramSettings, stats] = await Promise.all([
+      const [settings, telegramSettings, ollamaSettings, ollamaStatus, stats] = await Promise.all([
         apiJson("/api/settings"),
         apiJson("/api/telegram/settings"),
+        apiJson("/api/analyzer/settings"),
+        apiJson("/api/analyzer/status"),
         apiJson("/api/data/stats"),
       ]);
 
@@ -826,6 +1139,19 @@
       document.getElementById("telegramMinPrice").value = telegramSettings.min_price || "";
       document.getElementById("telegramMaxPrice").value = telegramSettings.max_price || "";
       document.getElementById("telegramTestMsg").textContent = "";
+
+      document.getElementById("ollamaUrl").value = ollamaSettings.ollama_base_url || "http://localhost:11434";
+      document.getElementById("ollamaModel").value = ollamaSettings.ollama_model || "qwen2.5:7b";
+      
+      const oBadge = document.getElementById("ollamaStatusBadge");
+      if (ollamaStatus.available) {
+        oBadge.textContent = "✅ Доступен";
+        oBadge.className = "badge good";
+      } else {
+        oBadge.textContent = "❌ Недоступен";
+        oBadge.className = "badge bad";
+      }
+      document.getElementById("ollamaMsg").classList.add("hidden");
 
       document.getElementById("dbStatsBadge").textContent = `DB size: ${stats.db_size_mb} MB | Records: ${stats.total_records}`;
     }
@@ -904,6 +1230,48 @@
       }
     }
 
+    async function saveOllamaSettings() {
+      const payload = {
+        ollama_base_url: document.getElementById("ollamaUrl").value.trim(),
+        ollama_model: document.getElementById("ollamaModel").value.trim()
+      };
+
+      const msg = document.getElementById("ollamaMsg");
+      msg.classList.remove("hidden");
+
+      try {
+        await apiJson("/api/analyzer/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        msg.textContent = "Ollama settings saved";
+        checkOllamaStatus();
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    }
+
+    async function checkOllamaStatus() {
+      const oBadge = document.getElementById("ollamaStatusBadge");
+      oBadge.textContent = "Checking...";
+      oBadge.className = "badge";
+      
+      try {
+        const ollamaStatus = await apiJson("/api/analyzer/status");
+        if (ollamaStatus.available) {
+          oBadge.textContent = "✅ Доступен";
+          oBadge.className = "badge good";
+        } else {
+          oBadge.textContent = "❌ Недоступен";
+          oBadge.className = "badge bad";
+        }
+      } catch(e) {
+        oBadge.textContent = "❌ Ошибка";
+        oBadge.className = "badge bad";
+      }
+    }
+
     async function cleanupInactive() {
       try {
         const result = await apiJson("/api/listings/inactive?days=30", { method: "DELETE" });
@@ -936,6 +1304,10 @@
       document.getElementById("saveSettingsBtn").addEventListener("click", saveSettings);
       document.getElementById("saveTelegramBtn").addEventListener("click", saveTelegramSettings);
       document.getElementById("testTelegramBtn").addEventListener("click", testTelegramConnection);
+      
+      document.getElementById("saveOllamaBtn").addEventListener("click", saveOllamaSettings);
+      document.getElementById("checkOllamaBtn").addEventListener("click", checkOllamaStatus);
+      
       document.getElementById("cleanupInactiveBtn").addEventListener("click", cleanupInactive);
       document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
     }

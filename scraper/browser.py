@@ -71,7 +71,7 @@ def _build_next_page_url(current_url: str, next_page_number: int) -> str | None:
     # For short paths like /s-iphone-15/k0 this still places seite before k0.
     k0_idx = next((idx for idx, segment in enumerate(segments) if segment.startswith("k0")), None)
     if k0_idx is not None:
-        insert_idx = max(k0_idx - 1, 1)
+        insert_idx = k0_idx
     else:
         # Fallback: insert before the last segment.
         insert_idx = max(len(segments) - 1, 0)
@@ -264,7 +264,7 @@ def _run_next_page_url_unit_test() -> None:
         (
             "https://www.kleinanzeigen.de/s-konsolen/erfurt/playstation-5/k0c279l3741r30",
             2,
-            "https://www.kleinanzeigen.de/s-konsolen/erfurt/seite:2/playstation-5/k0c279l3741r30",
+            "https://www.kleinanzeigen.de/s-konsolen/erfurt/playstation-5/seite:2/k0c279l3741r30",
         ),
         (
             "https://www.kleinanzeigen.de/s-iphone-15/seite:3/k0",

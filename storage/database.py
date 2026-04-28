@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -86,7 +87,7 @@ def upsert_listing(listing_dict: dict, query_id: int | None = None) -> str:
     Returns:
         "created" if inserted, otherwise "updated".
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     with Session(engine) as session:
         existing = session.get(Listing, listing_dict["id"])
@@ -184,7 +185,7 @@ def update_last_run(query_id: int) -> None:
         item = session.get(SearchQuery, query_id)
         if not item:
             return
-        item.last_run_at = datetime.utcnow()
+        item.last_run_at = datetime.now(timezone.utc)
         session.commit()
 
 
@@ -249,6 +250,25 @@ def _ensure_search_query_telegram_column(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _ensure_listing_ai_columns(conn: sqlite3.Connection) -> None:
+    statements = [
+        "ALTER TABLE listings ADD COLUMN ai_score INTEGER",
+        "ALTER TABLE listings ADD COLUMN ai_verdict TEXT",
+        "ALTER TABLE listings ADD COLUMN ai_price_assessment TEXT",
+        "ALTER TABLE listings ADD COLUMN ai_risks TEXT",
+        "ALTER TABLE listings ADD COLUMN ai_resale_margin TEXT",
+        "ALTER TABLE listings ADD COLUMN ai_recommendation TEXT",
+        "ALTER TABLE listings ADD COLUMN ai_analyzed_at DATETIME",
+    ]
+
+    for statement in statements:
+        try:
+            conn.execute(statement)
+        except sqlite3.OperationalError:
+            # Column already exists in upgraded environments.
+            pass
+
+
 def _read_config_defaults() -> dict[str, str]:
     cfg_path = BASE_DIR / "config.yaml"
     if not cfg_path.exists():
@@ -278,6 +298,7 @@ def init_dashboard_db() -> None:
         _ensure_search_query_is_active_column(conn)
         _ensure_search_query_interval_column(conn)
         _ensure_search_query_telegram_column(conn)
+        _ensure_listing_ai_columns(conn)
 
         # If settings are empty, migrate default values from config.yaml once.
         row = conn.execute("SELECT COUNT(*) AS cnt FROM settings").fetchone()
@@ -298,6 +319,91 @@ def get_settings() -> dict[str, str]:
             "SELECT key, value FROM settings ORDER BY key ASC"
         ).fetchall()
     return {row["key"]: row["value"] for row in rows}
+
+
+def save_ai_analysis(listing_id: str, analysis: dict) -> None:
+    """Persist AI analysis fields for a listing."""
+    ai_score: int | None
+    try:
+        ai_score = int(analysis.get("score")) if analysis.get("score") is not None else None
+    except (TypeError, ValueError):
+        ai_score = None
+
+    ai_risks = analysis.get("risks")
+    if isinstance(ai_risks, list):
+        ai_risks_value = json.dumps(ai_risks, ensure_ascii=False)
+    elif ai_risks is None:
+        ai_risks_value = None
+    elif isinstance(ai_risks, str):
+        ai_risks_value = ai_risks
+    else:
+        ai_risks_value = json.dumps(ai_risks, ensure_ascii=False)
+
+    analyzed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    with _get_sqlite_conn() as conn:
+        conn.execute(
+            """
+            UPDATE listings
+            SET ai_score = ?,
+                ai_verdict = ?,
+                ai_price_assessment = ?,
+                ai_risks = ?,
+                ai_resale_margin = ?,
+                ai_recommendation = ?,
+                ai_analyzed_at = ?
+            WHERE id = ?
+            """,
+            (
+                ai_score,
+                analysis.get("verdict"),
+                analysis.get("price_assessment"),
+                ai_risks_value,
+                analysis.get("resale_margin"),
+                analysis.get("recommendation"),
+                analyzed_at,
+                listing_id,
+            ),
+        )
+        conn.commit()
+
+
+def get_market_stats(query_id: int) -> dict:
+    """Compute basic market price stats for listings linked to a query."""
+    with _get_sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.price
+            FROM listings l
+            INNER JOIN listing_query_links lql ON lql.listing_id = l.id
+            WHERE lql.query_id = ?
+              AND l.price IS NOT NULL
+            """,
+            (query_id,),
+        ).fetchall()
+
+    prices = sorted(int(row["price"]) for row in rows)
+    sample_count = len(prices)
+    if sample_count == 0:
+        return {
+            "median_price": None,
+            "min_price": None,
+            "max_price": None,
+            "sample_count": 0,
+        }
+
+    mid = sample_count // 2
+    if sample_count % 2 == 1:
+        median_price = float(prices[mid])
+    else:
+        median_price = (prices[mid - 1] + prices[mid]) / 2
+
+    return {
+        "median_price": median_price,
+        "min_price": int(prices[0]),
+        "max_price": int(prices[-1]),
+        "sample_count": sample_count,
+    }
 
 
 def update_settings(new_values: dict[str, str]) -> dict[str, str]:
