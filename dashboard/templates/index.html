@@ -544,6 +544,15 @@
       </section>
 
       <section class="panel">
+        <h2>Batch Classification</h2>
+        <div class="inline-row" style="margin-bottom:8px;">
+          <button class="btn btn-accent" id="runClassifierBtn">Classify All Unclassified</button>
+          <span id="classifierStatusBadge" class="badge"></span>
+        </div>
+        <div id="classifierMsg" class="msg hidden"></div>
+      </section>
+
+      <section class="panel">
         <h2>Data Management</h2>
         <div class="inline-row">
           <button class="btn" id="cleanupInactiveBtn">Delete Inactive Older 30 Days</button>
@@ -573,6 +582,13 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div class="modal-section" id="productSection" style="display: none;">
+        <div class="modal-label">Товар</div>
+        <div id="productTitle" style="font-size: 14px; font-weight: bold;">-</div>
+        <div id="productSpecs" style="color: var(--muted); font-size: 12px; margin-top: 4px;"></div>
+        <div id="productConfidence" style="color: var(--muted); font-size: 12px; margin-top: 4px;"></div>
       </div>
 
       <div class="modal-section">
@@ -609,6 +625,7 @@
       listingsTotalPages: 1,
       activePollers: new Map(),
       telegramTokenSet: false,
+      classifierPoller: null,
     };
 
     let dailyChart;
@@ -637,6 +654,115 @@
 
     function escapeHtml(value) {
       return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+
+    const productTypeIcons = {
+      phone: "📱",
+      laptop: "💻",
+      desktop: "🖥️",
+      console: "🎮",
+      gpu: "🎯",
+      monitor: "🖥️",
+      tablet: "📱",
+      accessory: "📦",
+      service: "🔧",
+      other: "❓"
+    };
+
+    function normalizeSpecs(specs) {
+      if (!specs) return null;
+      if (typeof specs === "string") {
+        try {
+          return JSON.parse(specs);
+        } catch (_) {
+          return null;
+        }
+      }
+      if (typeof specs === "object") return specs;
+      return null;
+    }
+
+    function buildSpecsLine(specs) {
+      if (!specs) return "";
+      const parts = [];
+      if (specs.ram_gb) parts.push(`${specs.ram_gb}GB RAM`);
+      if (specs.storage_gb) parts.push(`${specs.storage_gb}GB`);
+      if (specs.cpu) parts.push(specs.cpu);
+      if (specs.gpu) parts.push(specs.gpu);
+      if (specs.screen_inch) parts.push(`${specs.screen_inch} inch`);
+      if (specs.storage_variant) parts.push(specs.storage_variant);
+      if (specs.color) parts.push(specs.color);
+      if (specs.condition) parts.push(specs.condition);
+      if (specs.included_items) parts.push(specs.included_items);
+      return parts.join(" · ");
+    }
+
+    function extractClassification(row) {
+      const classification = {
+        product_type: row.cl_product_type ?? null,
+        brand: row.cl_brand ?? null,
+        model: row.cl_model ?? null,
+        is_accessory: row.cl_is_accessory === null || row.cl_is_accessory === undefined ? null : Boolean(row.cl_is_accessory),
+        is_service: row.cl_is_service === null || row.cl_is_service === undefined ? null : Boolean(row.cl_is_service),
+        specs: row.cl_specs ?? null,
+        confidence: row.cl_confidence ?? null
+      };
+
+      const hasValue = Object.values(classification).some((value) => value !== null && value !== "");
+      return hasValue ? classification : null;
+    }
+
+    function renderClassification(classification) {
+      const section = document.getElementById("productSection");
+      const titleEl = document.getElementById("productTitle");
+      const specsEl = document.getElementById("productSpecs");
+      const confidenceEl = document.getElementById("productConfidence");
+
+      if (!classification) {
+        section.style.display = "none";
+        return;
+      }
+
+      const typeKey = String(classification.product_type || "").toLowerCase();
+      const icon = productTypeIcons[typeKey] || "❓";
+      const titleParts = [];
+      if (classification.model) {
+        titleParts.push(classification.model);
+      } else if (classification.product_type) {
+        titleParts.push(classification.product_type);
+      }
+      if (classification.brand) {
+        titleParts.push(classification.brand);
+      }
+      const titleText = titleParts.length ? titleParts.join(" · ") : "Не указано";
+      titleEl.textContent = `${icon} ${titleText}`;
+
+      const specsLine = buildSpecsLine(normalizeSpecs(classification.specs));
+      if (specsLine) {
+        specsEl.textContent = specsLine;
+        specsEl.style.display = "block";
+      } else {
+        specsEl.textContent = "";
+        specsEl.style.display = "none";
+      }
+
+      let confidencePct = null;
+      if (typeof classification.confidence === "number") {
+        confidencePct = Math.round(classification.confidence * 100);
+      } else if (classification.confidence !== null && classification.confidence !== undefined) {
+        const parsed = Number(classification.confidence);
+        if (Number.isFinite(parsed)) confidencePct = Math.round(parsed * 100);
+      }
+
+      if (confidencePct !== null) {
+        confidenceEl.textContent = `Уверенность: ${confidencePct}%`;
+        confidenceEl.style.display = "block";
+      } else {
+        confidenceEl.textContent = "";
+        confidenceEl.style.display = "none";
+      }
+
+      section.style.display = "block";
     }
 
     function setRouteView() {
@@ -781,6 +907,7 @@
           else if (score >= 4) { badgeClass = "warn"; icon = "◆"; }
           
           const rawRisks = row.ai_risks || "[]";
+          const classification = extractClassification(row);
           const analysisData = {
             title: row.title,
             price: row.price,
@@ -790,7 +917,8 @@
             risks: rawRisks,
             resale_margin: row.ai_resale_margin,
             recommendation: row.ai_recommendation,
-            analyzed_at: row.ai_analyzed_at
+            analyzed_at: row.ai_analyzed_at,
+            classification: classification
           };
           
           const dataStr = escapeHtml(JSON.stringify(analysisData));
@@ -859,7 +987,8 @@
           recommendation: result.analysis.recommendation,
           suggested_price: result.analysis.suggested_price,
           analyzed_at: new Date().toISOString(),
-          market: result.market_stats
+          market: result.market_stats,
+          classification: result.classification || null
         };
         
         const dataStr = escapeHtml(JSON.stringify(analysisData));
@@ -898,6 +1027,8 @@
         scoreEl.textContent = `${icon} ${score}/10`;
         scoreEl.style.color = scoreColor;
 
+        renderClassification(data.classification);
+
         document.getElementById("modalPriceAssess").textContent = data.price_assessment || "-";
         document.getElementById("modalRec").textContent = data.recommendation ? data.recommendation.toUpperCase() : "-";
         document.getElementById("modalVerdict").textContent = data.verdict || "-";
@@ -933,15 +1064,28 @@
           const median = data.market.median_price;
           const samples = data.market.sample_count;
           const price = Number(data.price);
-          
-          let marketContent = `<div>Медиана: ${median ? median.toFixed(0) : "-"} € (${samples} объявл.)</div>`;
-          
-          if (Number.isFinite(price) && median && median > 0) {
-            const pct = ((price - median) / median * 100).toFixed(0);
-            const sign = price >= median ? "+" : "";
+          const matchLevel = data.market.match_level || "query";
+          const medianNum = Number(median);
+
+          let medianLabel = "Медиана по поиску";
+          if (matchLevel === "model") {
+            medianLabel = "Медиана по модели";
+          } else if (matchLevel === "brand") {
+            const brandName = data.classification && data.classification.brand ? ` ${data.classification.brand}` : "";
+            medianLabel = `Медиана по бренду${brandName}`;
+          }
+
+          const medianValue = median === null || median === undefined || Number.isNaN(medianNum)
+            ? "-"
+            : medianNum.toFixed(0);
+          let marketContent = `<div>${medianLabel}: ${medianValue} € (${samples} объявл.)</div>`;
+
+          if (Number.isFinite(price) && Number.isFinite(medianNum) && medianNum > 0) {
+            const pct = ((price - medianNum) / medianNum * 100).toFixed(0);
+            const sign = price >= medianNum ? "+" : "";
             marketContent += `<div>Эта цена: ${price} € (${sign}${pct}% от медианы)</div>`;
           }
-          
+
           marketStatsEl.innerHTML = marketContent;
         } else {
           marketStatsEl.innerHTML = "<div>Недостаточно данных для анализа рынка<br>(нужно минимум 5 объявлений с ценой)</div>";
@@ -1144,12 +1288,13 @@
     }
 
     async function loadSettings() {
-      const [settings, telegramSettings, ollamaSettings, ollamaStatus, stats] = await Promise.all([
+      const [settings, telegramSettings, ollamaSettings, ollamaStatus, stats, classifierStatus] = await Promise.all([
         apiJson("/api/settings"),
         apiJson("/api/telegram/settings"),
         apiJson("/api/analyzer/settings"),
         apiJson("/api/analyzer/status"),
         apiJson("/api/data/stats"),
+        apiJson("/api/classifier/status"),
       ]);
 
       document.getElementById("intervalMinutes").value = settings.interval_minutes || "120";
@@ -1183,6 +1328,9 @@
       document.getElementById("ollamaMsg").classList.add("hidden");
 
       document.getElementById("dbStatsBadge").textContent = `DB size: ${stats.db_size_mb} MB | Records: ${stats.total_records}`;
+
+      updateClassifierStatus(classifierStatus);
+      if (classifierStatus.running) startClassifierPolling();
     }
 
     async function saveSettings() {
@@ -1301,6 +1449,74 @@
       }
     }
 
+    function updateClassifierStatus(status) {
+      const badge = document.getElementById("classifierStatusBadge");
+      const msg = document.getElementById("classifierMsg");
+      if (!status) {
+        badge.textContent = "Idle";
+        badge.className = "badge";
+        msg.classList.add("hidden");
+        return;
+      }
+
+      const progress = status.progress || {};
+      const total = Number(progress.total || 0);
+      const done = Number(progress.done || 0);
+      const errors = Number(progress.errors || 0);
+
+      if (status.running) {
+        badge.textContent = `Running... ${done}/${total}`;
+        badge.className = "badge warn";
+        msg.classList.add("hidden");
+        return;
+      }
+
+      if (total > 0) {
+        badge.textContent = `Done ${done}/${total}`;
+        badge.className = errors > 0 ? "badge warn" : "badge good";
+        msg.textContent = `Finished: ${done}/${total}, errors: ${errors}`;
+        msg.classList.remove("hidden");
+      } else {
+        badge.textContent = "Idle";
+        badge.className = "badge";
+        msg.classList.add("hidden");
+      }
+    }
+
+    async function refreshClassifierStatus() {
+      try {
+        const status = await apiJson("/api/classifier/status");
+        updateClassifierStatus(status);
+
+        if (!status.running && state.classifierPoller) {
+          clearInterval(state.classifierPoller);
+          state.classifierPoller = null;
+        }
+      } catch (error) {
+        const msg = document.getElementById("classifierMsg");
+        msg.textContent = error.message;
+        msg.classList.remove("hidden");
+      }
+    }
+
+    function startClassifierPolling() {
+      if (state.classifierPoller) return;
+      state.classifierPoller = setInterval(refreshClassifierStatus, 3000);
+    }
+
+    async function runClassifierAll() {
+      const msg = document.getElementById("classifierMsg");
+      msg.classList.add("hidden");
+      try {
+        await apiJson("/api/classifier/run-all", { method: "POST" });
+        await refreshClassifierStatus();
+        startClassifierPolling();
+      } catch (error) {
+        msg.textContent = error.message;
+        msg.classList.remove("hidden");
+      }
+    }
+
     async function cleanupInactive() {
       try {
         const result = await apiJson("/api/listings/inactive?days=30", { method: "DELETE" });
@@ -1336,6 +1552,8 @@
       
       document.getElementById("saveOllamaBtn").addEventListener("click", saveOllamaSettings);
       document.getElementById("checkOllamaBtn").addEventListener("click", checkOllamaStatus);
+
+      document.getElementById("runClassifierBtn").addEventListener("click", runClassifierAll);
       
       document.getElementById("cleanupInactiveBtn").addEventListener("click", cleanupInactive);
       document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);

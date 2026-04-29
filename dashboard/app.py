@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import logging
 import sqlite3
 import threading
@@ -15,6 +16,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, Response, jsonify, render_template, request
 
+from analyzer.classifier import ProductClassifier
 from analyzer.ollama import OllamaAnalyzer
 from notifier.telegram import TelegramNotifier
 from scraper.browser import scrape_search
@@ -26,12 +28,15 @@ from storage.database import (
     delete_query_and_listings_for_dashboard,
     finish_scrape_log,
     get_market_stats,
+    get_market_stats_by_model,
     get_latest_scrape_status_for_query,
     get_query_for_dashboard,
     get_scrape_log,
     get_settings,
+    get_unclassified_listings,
     get_listing_ids_for_query,
     init_dashboard_db,
+    save_classification,
     save_ai_analysis,
     list_queries_for_dashboard,
     list_scrape_logs,
@@ -71,6 +76,15 @@ ollama_analyzer = OllamaAnalyzer(
     base_url=OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"],
     model=OLLAMA_SETTINGS_DEFAULTS["ollama_model"],
 )
+
+ollama_classifier = ProductClassifier(
+    base_url=OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"],
+    model=OLLAMA_SETTINGS_DEFAULTS["ollama_model"],
+)
+
+classifier_lock = threading.Lock()
+_classifier_running = False
+_classifier_progress: dict[str, int] = {"total": 0, "done": 0, "errors": 0}
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -178,6 +192,21 @@ def _build_ollama_analyzer_from_settings() -> OllamaAnalyzer:
     return OllamaAnalyzer(base_url=base_url, model=model)
 
 
+def _build_ollama_classifier_from_settings() -> ProductClassifier:
+    settings = get_settings()
+    base_url = str(
+        settings.get("ollama_base_url", OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"])
+    ).strip()
+    model = str(settings.get("ollama_model", OLLAMA_SETTINGS_DEFAULTS["ollama_model"])).strip()
+
+    if not base_url:
+        base_url = OLLAMA_SETTINGS_DEFAULTS["ollama_base_url"]
+    if not model:
+        model = OLLAMA_SETTINGS_DEFAULTS["ollama_model"]
+
+    return ProductClassifier(base_url=base_url, model=model)
+
+
 def _get_telegram_runtime_settings() -> dict[str, Any]:
     settings = get_settings()
     return {
@@ -214,6 +243,39 @@ def _filter_listings_by_price(
         filtered.append(item)
 
     return filtered
+
+
+def _build_classification_payload(listing: dict[str, Any]) -> dict[str, Any] | None:
+    specs_raw = listing.get("cl_specs")
+    specs_value: dict[str, Any] | None
+    if isinstance(specs_raw, str):
+        try:
+            specs_value = json.loads(specs_raw)
+        except json.JSONDecodeError:
+            specs_value = None
+    elif isinstance(specs_raw, dict):
+        specs_value = specs_raw
+    else:
+        specs_value = None
+
+    classification = {
+        "product_type": listing.get("cl_product_type"),
+        "brand": listing.get("cl_brand"),
+        "model": listing.get("cl_model"),
+        "is_accessory": (
+            None if listing.get("cl_is_accessory") is None else bool(listing.get("cl_is_accessory"))
+        ),
+        "is_service": (
+            None if listing.get("cl_is_service") is None else bool(listing.get("cl_is_service"))
+        ),
+        "specs": specs_value,
+        "confidence": listing.get("cl_confidence"),
+    }
+
+    has_value = any(
+        value not in (None, "") for value in classification.values()
+    )
+    return classification if has_value else None
 
 
 def _get_typed_settings() -> dict[str, Any]:
@@ -352,6 +414,17 @@ def _run_query_scrape_with_log(query_id: int, log_id: int) -> None:
             deactivated_count=deactivated,
         )
 
+        if new_listings:
+            try:
+                classifier = ollama_classifier
+                results = classifier.classify_batch(new_listings)
+                for listing, result in zip(new_listings, results):
+                    if "error" not in result:
+                        save_classification(listing["id"], result)
+                logger.info("Classified %s new listings", len(new_listings))
+            except Exception as classifier_exc:
+                logger.error("Listing classification failed: %s", classifier_exc)
+
         telegram = _get_telegram_runtime_settings()
         query_telegram_enabled = int(query.get("telegram_enabled") or 0) == 1
         if created > 0 and telegram["enabled"] and query_telegram_enabled:
@@ -434,6 +507,51 @@ def _start_run_all() -> bool:
     return True
 
 
+def _set_classifier_progress(total: int, done: int, errors: int) -> None:
+    global _classifier_progress
+    with classifier_lock:
+        _classifier_progress = {"total": total, "done": done, "errors": errors}
+
+
+def _run_classifier_batch_thread() -> None:
+    global _classifier_running
+
+    done = 0
+    errors = 0
+
+    with classifier_lock:
+        _classifier_running = True
+        _classifier_progress.update({"total": 0, "done": 0, "errors": 0})
+
+    try:
+        listings = get_unclassified_listings(limit=500)
+        total = len(listings)
+        _set_classifier_progress(total=total, done=0, errors=0)
+
+        if total == 0:
+            return
+
+        classifier = ollama_classifier
+        for batch_start in range(0, total, 5):
+            batch = listings[batch_start:batch_start + 5]
+            results = classifier.classify_batch(batch)
+            for listing, result in zip(batch, results):
+                if "error" in result:
+                    errors += 1
+                else:
+                    save_classification(listing["id"], result)
+                done += 1
+
+            _set_classifier_progress(total=total, done=done, errors=errors)
+            if done % 50 == 0 or done == total:
+                logger.info("Classifier progress: %s/%s (errors: %s)", done, total, errors)
+    except Exception as exc:
+        logger.error("Batch classification failed: %s", exc)
+    finally:
+        with classifier_lock:
+            _classifier_running = False
+
+
 def _query_listing_count(query_id: int) -> int:
     with _get_conn() as conn:
         row = conn.execute(
@@ -479,11 +597,13 @@ def _build_scraper_status() -> dict[str, Any]:
 
 def _bootstrap() -> None:
     global ollama_analyzer
+    global ollama_classifier
 
     init_dashboard_db()
     _ensure_telegram_settings_defaults()
     _ensure_ollama_settings_defaults()
     ollama_analyzer = _build_ollama_analyzer_from_settings()
+    ollama_classifier = _build_ollama_classifier_from_settings()
     _sync_config_from_settings(_get_typed_settings())
 
     if not scheduler.running:
@@ -680,7 +800,15 @@ def api_listings() -> Any:
                 l.ai_risks,
                 l.ai_resale_margin,
                 l.ai_recommendation,
-                l.ai_analyzed_at
+                l.ai_analyzed_at,
+                l.cl_product_type,
+                l.cl_brand,
+                l.cl_model,
+                l.cl_is_accessory,
+                l.cl_is_service,
+                l.cl_specs,
+                l.cl_confidence,
+                l.cl_classified_at
             FROM listings l
             {where_sql}
             ORDER BY {order_sql}
@@ -927,6 +1055,7 @@ def api_analyzer_settings_get() -> Any:
 @app.put("/api/analyzer/settings")
 def api_analyzer_settings_put() -> Any:
     global ollama_analyzer
+    global ollama_classifier
 
     payload = request.get_json(silent=True) or {}
     base_url = str(payload.get("ollama_base_url", "")).strip()
@@ -945,6 +1074,7 @@ def api_analyzer_settings_put() -> Any:
     )
 
     ollama_analyzer = OllamaAnalyzer(base_url=base_url, model=model)
+    ollama_classifier = ProductClassifier(base_url=base_url, model=model)
 
     return jsonify(
         {
@@ -956,12 +1086,35 @@ def api_analyzer_settings_put() -> Any:
     )
 
 
+@app.post("/api/classifier/run-all")
+def api_classifier_run_all() -> Any:
+    global _classifier_running
+
+    with classifier_lock:
+        if _classifier_running:
+            return jsonify({"error": "classifier already running"}), 409
+        _classifier_running = True
+        _classifier_progress.update({"total": 0, "done": 0, "errors": 0})
+
+    thread = threading.Thread(target=_run_classifier_batch_thread, daemon=True)
+    thread.start()
+    return jsonify({"status": "started"})
+
+
+@app.get("/api/classifier/status")
+def api_classifier_status() -> Any:
+    with classifier_lock:
+        return jsonify({"running": _classifier_running, "progress": dict(_classifier_progress)})
+
+
 @app.post("/api/analyzer/analyze/<listing_id>")
 def api_analyzer_analyze_listing(listing_id: str) -> Any:
     with _get_conn() as conn:
         listing_row = conn.execute(
             """
-            SELECT id, title, price, price_negotiable, location, category, description, url
+            SELECT id, title, price, price_negotiable, location, category, description, url,
+                   cl_product_type, cl_brand, cl_model, cl_is_accessory, cl_is_service,
+                   cl_specs, cl_confidence, cl_classified_at
             FROM listings
             WHERE id = ?
             """,
@@ -984,6 +1137,8 @@ def api_analyzer_analyze_listing(listing_id: str) -> Any:
         query_id = int(link_row["query_id"]) if link_row else None
         listing = dict(listing_row)
 
+        classification = _build_classification_payload(listing)
+
         query_name = None
         if query_id is not None:
             query_row = conn.execute(
@@ -994,7 +1149,12 @@ def api_analyzer_analyze_listing(listing_id: str) -> Any:
                 query_name = str(query_row["name"])
 
     if query_id is not None:
-        market_stats = get_market_stats(query_id)
+        market_stats = get_market_stats_by_model(
+            query_id,
+            listing.get("cl_product_type"),
+            listing.get("cl_brand"),
+            listing.get("cl_model"),
+        )
         if market_stats.get("sample_count", 0) < 5:
             return jsonify({
                 "error": "insufficient_data",
@@ -1007,6 +1167,7 @@ def api_analyzer_analyze_listing(listing_id: str) -> Any:
             "min_price": None,
             "max_price": None,
             "sample_count": 0,
+            "match_level": "query",
         }
 
     market_stats["query_name"] = query_name or "Nicht angegeben"
@@ -1018,6 +1179,7 @@ def api_analyzer_analyze_listing(listing_id: str) -> Any:
     return jsonify(
         {
             "listing": listing,
+            "classification": classification,
             "query_id": query_id,
             "market_stats": market_stats,
             "analysis": analysis,

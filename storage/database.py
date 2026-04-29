@@ -259,6 +259,14 @@ def _ensure_listing_ai_columns(conn: sqlite3.Connection) -> None:
         "ALTER TABLE listings ADD COLUMN ai_resale_margin TEXT",
         "ALTER TABLE listings ADD COLUMN ai_recommendation TEXT",
         "ALTER TABLE listings ADD COLUMN ai_analyzed_at DATETIME",
+        "ALTER TABLE listings ADD COLUMN cl_product_type TEXT",
+        "ALTER TABLE listings ADD COLUMN cl_brand TEXT",
+        "ALTER TABLE listings ADD COLUMN cl_model TEXT",
+        "ALTER TABLE listings ADD COLUMN cl_is_accessory INTEGER",
+        "ALTER TABLE listings ADD COLUMN cl_is_service INTEGER",
+        "ALTER TABLE listings ADD COLUMN cl_specs TEXT",
+        "ALTER TABLE listings ADD COLUMN cl_confidence REAL",
+        "ALTER TABLE listings ADD COLUMN cl_classified_at DATETIME",
     ]
 
     for statement in statements:
@@ -639,3 +647,138 @@ def get_latest_scrape_status_for_query(query_id: int) -> dict | None:
             (query_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def save_classification(listing_id: str, classification: dict) -> None:
+    """Persist classification fields for a listing."""
+    if not classification or "error" in classification:
+        return
+
+    specs_value: str | None
+    specs = classification.get("specs")
+    if isinstance(specs, dict):
+        specs_value = json.dumps(specs, ensure_ascii=False)
+    elif specs is None or isinstance(specs, str):
+        specs_value = specs
+    else:
+        specs_value = json.dumps(specs, ensure_ascii=False)
+
+    def _as_int_flag(value: object) -> int | None:
+        if value is None:
+            return None
+        return 1 if bool(value) else 0
+
+    confidence_value: float | None
+    try:
+        confidence_value = (
+            float(classification.get("confidence"))
+            if classification.get("confidence") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        confidence_value = None
+
+    classified_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    with _get_sqlite_conn() as conn:
+        conn.execute(
+            """
+            UPDATE listings
+            SET cl_product_type = ?,
+                cl_brand = ?,
+                cl_model = ?,
+                cl_is_accessory = ?,
+                cl_is_service = ?,
+                cl_specs = ?,
+                cl_confidence = ?,
+                cl_classified_at = ?
+            WHERE id = ?
+            """,
+            (
+                classification.get("product_type"),
+                classification.get("brand"),
+                classification.get("model"),
+                _as_int_flag(classification.get("is_accessory")),
+                _as_int_flag(classification.get("is_service")),
+                specs_value,
+                confidence_value,
+                classified_at,
+                listing_id,
+            ),
+        )
+        conn.commit()
+
+
+def get_unclassified_listings(limit: int = 100) -> list[dict]:
+    """Return listings missing classification metadata."""
+    with _get_sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, price, price_negotiable, category, description
+            FROM listings
+            WHERE cl_classified_at IS NULL
+            ORDER BY first_seen_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_market_stats_by_model(
+    query_id: int,
+    product_type: str | None,
+    brand: str | None,
+    model: str | None,
+) -> dict:
+    """Compute market stats with model/brand matching when available."""
+    if model:
+        match_level = "model"
+        where_clause = "l.cl_model = ? AND l.cl_is_accessory = 0"
+        params: list[object] = [query_id, model]
+    elif brand and product_type:
+        match_level = "brand"
+        where_clause = "l.cl_brand = ? AND l.cl_product_type = ? AND l.cl_is_accessory = 0"
+        params = [query_id, brand, product_type]
+    else:
+        stats = get_market_stats(query_id)
+        stats["match_level"] = "query"
+        return stats
+
+    with _get_sqlite_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT l.price
+            FROM listings l
+            INNER JOIN listing_query_links lql ON lql.listing_id = l.id
+            WHERE lql.query_id = ?
+              AND l.price IS NOT NULL
+              AND {where_clause}
+            """,
+            tuple(params),
+        ).fetchall()
+
+    prices = sorted(int(row[0]) for row in rows)
+    sample_count = len(prices)
+    if sample_count == 0:
+        return {
+            "median_price": None,
+            "min_price": None,
+            "max_price": None,
+            "sample_count": 0,
+            "match_level": match_level,
+        }
+
+    mid = sample_count // 2
+    if sample_count % 2 == 1:
+        median_price = float(prices[mid])
+    else:
+        median_price = (prices[mid - 1] + prices[mid]) / 2
+
+    return {
+        "median_price": median_price,
+        "min_price": int(prices[0]),
+        "max_price": int(prices[-1]),
+        "sample_count": sample_count,
+        "match_level": match_level,
+    }
